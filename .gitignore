@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+*.wav
+*.mp3
+*.ogg
+.env
+config.json
+runtime/
+.venv/
