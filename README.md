@@ -2,99 +2,101 @@
 
 `voice-pet` 是一个面向树莓派的本地语音助手原型。
 
-它在 PicoClaw 之外独立运行，负责麦克风采集、唤醒词检测、语音转写、回复生成和本地播报；后续可以通过适配层接入 PicoClaw 的 agent、memory 和 tools。
+它运行在 PicoClaw 之外，负责麦克风采集、唤醒词检测、语音转写、回复生成和本地播报；后续可以通过适配层接入 PicoClaw 的 agent、memory 和 tools。
 
-## Features
+English README: [README.en.md](./README.en.md)
 
-- MiMo ASR / TTS / text model integration
-- Local audio capture via `arecord`
-- Local playback via `aplay`
-- Wakeword alias matching (`小爱`, `小艾`, `小ai`, `xiao ai`, `xiaoai`)
-- Single-turn voice interaction state machine
-- Pluggable action router for weather, music, and device actions
+## 项目特性
 
-## Status
+- 集成 MiMo ASR、TTS 和文本模型
+- 使用 `arecord` 进行本地录音
+- 使用 `aplay` 进行本地播放
+- 支持唤醒词别名匹配：`小爱`、`小艾`、`小ai`、`xiao ai`、`xiaoai`
+- 提供单轮语音交互状态机
+- 预留天气、音乐、设备控制等动作路由接口
 
-Implemented in the current MVP:
+## 当前状态
 
-- end-to-end loop: listen -> transcribe -> reply -> synthesize -> play
-- minimal runtime state machine: `idle -> wake -> record -> think -> speak -> idle`
-- MiMo adapters for ASR, TTS, and text reply generation
+当前 MVP 已实现：
 
-Not implemented yet:
+- 端到端闭环：监听 -> 转写 -> 回复 -> 合成 -> 播放
+- 最小运行时状态机：`idle -> wake -> record -> think -> speak -> idle`
+- MiMo 的 ASR、TTS 和文本回复适配器
 
-- streaming VAD / offline wakeword engine
-- multi-turn session management
-- concrete weather / music integrations
-- PicoClaw adapter
+暂未实现：
 
-## Project Layout
+- 流式 VAD / 离线唤醒词引擎
+- 多轮会话管理
+- 真实天气 / 音乐服务集成
+- PicoClaw 适配器
+
+## 项目结构
 
 ```text
 src/voice_pet/
-├── main.py              # CLI entrypoint
-├── state_machine.py     # runtime loop
-├── audio_capture.py     # recording and silence cut-off
-├── wakeword.py          # wakeword alias matching
-├── action_router.py     # action routing hooks
-├── asr/mimo_asr.py      # MiMo ASR client
-├── tts/mimo_tts.py      # MiMo TTS client
-└── brain/direct_llm.py  # MiMo text reply client
+├── main.py              # CLI 入口
+├── state_machine.py     # 运行时主循环
+├── audio_capture.py     # 录音与静音截断
+├── wakeword.py          # 唤醒词别名匹配
+├── action_router.py     # 动作路由扩展点
+├── asr/mimo_asr.py      # MiMo ASR 客户端
+├── tts/mimo_tts.py      # MiMo TTS 客户端
+└── brain/direct_llm.py  # MiMo 文本回复客户端
 ```
 
-## Requirements
+## 环境要求
 
 - Python 3.13+
-- ALSA tools:
+- ALSA 工具：
   - `arecord`
   - `aplay`
 - MiMo API key
 
-## Configuration
+## 配置
 
-Copy the example config:
+复制示例配置：
 
 ```bash
 cp ~/.picoclaw/voice-pet/config.example.json ~/.picoclaw/voice-pet/config.json
 ```
 
-Set the API key via environment variable:
+通过环境变量设置 API key：
 
 ```bash
 export MIMO_API_KEY="<your-token>"
 ```
 
-`config.json` can also carry the key, but environment variables are preferred.
+也可以直接写入 `config.json`，但更推荐使用环境变量。
 
-## Run
+## 运行
 
-Start the main loop:
+启动主循环：
 
 ```bash
 cd ~/.picoclaw/voice-pet
 PYTHONPATH=src python3 -m voice_pet.main --config ~/.picoclaw/voice-pet/config.json
 ```
 
-Run the TTS / ASR demo:
+运行 TTS / ASR 演示：
 
 ```bash
 cd ~/.picoclaw/voice-pet
 PYTHONPATH=src python3 -m voice_pet.demo_loop --config ~/.picoclaw/voice-pet/config.json --text "主人，咋啦"
 ```
 
-## Runtime Flow
+## 运行流程
 
-1. Record a short idle window
-2. Transcribe audio with MiMo ASR
-3. Match wakeword aliases
-4. Acknowledge with `主人，咋啦`
-5. Record the user utterance
-6. Route to an action handler or text model
-7. Synthesize the reply with MiMo TTS
-8. Play the result locally
+1. 录制一段空闲态环境音
+2. 使用 MiMo ASR 转写音频
+3. 匹配唤醒词别名
+4. 播报 `主人，咋啦`
+5. 录制用户问题
+6. 路由到动作处理器或文本模型
+7. 使用 MiMo TTS 合成回复
+8. 本地播放结果音频
 
-## Notes
+## 说明
 
-The current MVP uses system audio commands directly instead of a Python audio stack. This keeps the runtime small and makes deployment on Raspberry Pi straightforward.
+当前 MVP 直接依赖系统音频命令，而不是额外引入 Python 音频栈。这样可以减少运行时依赖，便于在树莓派上部署和排查问题。
 
-The next iteration should focus on streaming wakeword detection, interruption handling, and action integrations.
+下一步重点会放在流式唤醒、打断处理和动作集成上。
