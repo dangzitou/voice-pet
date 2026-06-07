@@ -37,6 +37,25 @@ class WakewordDetector:
                 return WakewordResult(matched=True, alias=alias, cleaned_text=cleaned)
         return WakewordResult(matched=False, cleaned_text=normalized)
 
+    def detect_prefix(self, text: str) -> WakewordResult:
+        normalized = _compact(text)
+        remaining = normalized
+        matched_alias = ""
+
+        while remaining:
+            for alias in self.aliases:
+                if remaining.startswith(alias):
+                    if not matched_alias:
+                        matched_alias = alias
+                    remaining = remaining[len(alias):]
+                    break
+            else:
+                break
+
+        if matched_alias:
+            return WakewordResult(matched=True, alias=matched_alias, cleaned_text=remaining)
+        return WakewordResult(matched=False, cleaned_text=normalized)
+
 
 def _compact(text: str) -> str:
     return _PUNCTUATION.sub("", text.strip().lower())

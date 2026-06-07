@@ -155,8 +155,9 @@ The default listener is local streaming mode:
 - `audio.listen_mode = "fixed_window"`: switches back to the previous fixed-window recording mode for microphone or threshold debugging
 - `audio.voice_start_threshold` / `audio.silence_threshold`: control speech start and silence cutoff thresholds
 - `audio.stream_chunk_ms` / `audio.pre_roll_seconds`: control streaming chunk size and preserved pre-trigger audio
-- `wakeword.session_timeout_seconds = 60.0`: leave wake mode after 60 seconds without new speech
+- `wakeword.session_timeout_seconds = 60.0`: leave wake mode after 60 seconds without processable new speech
 - `wakeword.ack_audio_path`: prebuilt wake acknowledgement audio path, played directly when configured
+- Follow-up speech inside wake mode must also start with the `小爱` prefix; speech without the prefix is treated as noise and is not forwarded to PicoClaw
 
 ## Run
 
@@ -186,7 +187,7 @@ Check status, follow logs, and stop:
 | `voice-pet logs --target gateway -f` | Follow PicoClaw gateway logs |
 | `voice-pet config show` | Show current model, audio, and runtime configuration |
 | `voice-pet config set --tts-voice 冰糖` | Update config, example switches TTS voice |
-| `voice-pet mock --offline --wake-text "小爱小爱" --user-text "今天厦门天气咋样"` | Run the offline mock end-to-end test |
+| `voice-pet mock --offline --wake-text "小爱小爱" --user-text "小爱今天厦门天气咋样"` | Run the offline mock end-to-end test |
 | `voice-pet demo --text "主人，咋啦"` | Run a MiMo TTS/ASR debug demo |
 
 Most common status, log, and stop commands:
@@ -219,13 +220,13 @@ voice-pet demo --text "主人，咋啦"
 Run the mock end-to-end test:
 
 ```bash
-voice-pet mock --wake-text "小爱小爱" --user-text "你好，请只回复：ok"
+voice-pet mock --wake-text "小爱小爱" --user-text "小爱你好，请只回复：ok"
 ```
 
 Run the offline mock without MiMo/PicoClaw credentials:
 
 ```bash
-voice-pet mock --offline --wake-text "小爱小爱" --user-text "今天天气怎么样"
+voice-pet mock --offline --wake-text "小爱小爱" --user-text "小爱今天天气怎么样"
 ```
 
 ## Runtime Flow
@@ -236,10 +237,10 @@ voice-pet mock --offline --wake-text "小爱小爱" --user-text "今天天气怎
 4. Match wakeword aliases
 5. If the wakeword matches, immediately acknowledge with `主人，咋啦`
 6. Enter wake mode and continue waiting for user speech
-7. Transcribe user speech with MiMo ASR and forward the text to PicoClaw gateway
+7. Transcribe user speech with MiMo ASR; only speech prefixed with `小爱` is forwarded to PicoClaw gateway
 8. Receive the reply text from PicoClaw
 9. Synthesize the reply with MiMo TTS and play it locally
-10. Continue waiting for the next user utterance; leave wake mode after 60 seconds without speech
+10. Continue waiting for the next prefixed user utterance; leave wake mode after 60 seconds without processable speech
 
 ## Notes
 

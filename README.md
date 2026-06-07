@@ -155,8 +155,9 @@ voice-pet config set --config ./config.json \
 - `audio.listen_mode = "fixed_window"`：切回旧的固定窗口录音模式，便于排查阈值或麦克风问题
 - `audio.voice_start_threshold` / `audio.silence_threshold`：控制语音开始和静音结束阈值
 - `audio.stream_chunk_ms` / `audio.pre_roll_seconds`：控制流式读取块大小和触发前保留音频
-- `wakeword.session_timeout_seconds = 60.0`：唤醒后 60 秒没有新语音就退出唤醒态
+- `wakeword.session_timeout_seconds = 60.0`：唤醒后 60 秒没有可处理的新语音就退出唤醒态
 - `wakeword.ack_audio_path`：预制唤醒确认音频路径，配置后优先直接播放
+- 唤醒态里的后续对话也必须以 `小爱` 前缀开头；不带前缀的语音会当作杂音忽略，不转发给 PicoClaw
 
 ## 运行
 
@@ -186,7 +187,7 @@ voice-pet start
 | `voice-pet logs --target gateway -f` | 实时查看 PicoClaw gateway 日志 |
 | `voice-pet config show` | 查看当前模型、音频和 runtime 配置 |
 | `voice-pet config set --tts-voice 冰糖` | 修改配置，示例为切换 TTS 音色 |
-| `voice-pet mock --offline --wake-text "小爱小爱" --user-text "今天厦门天气咋样"` | 跑离线 mock 闭环测试 |
+| `voice-pet mock --offline --wake-text "小爱小爱" --user-text "小爱今天厦门天气咋样"` | 跑离线 mock 闭环测试 |
 | `voice-pet demo --text "主人，咋啦"` | 跑一次 MiMo TTS/ASR 调试 demo |
 
 最常用的状态、日志和停止：
@@ -219,13 +220,13 @@ voice-pet demo --text "主人，咋啦"
 运行 mock 闭环测试：
 
 ```bash
-voice-pet mock --wake-text "小爱小爱" --user-text "你好，请只回复：ok"
+voice-pet mock --wake-text "小爱小爱" --user-text "小爱你好，请只回复：ok"
 ```
 
 不依赖 MiMo/PicoClaw 的离线 mock：
 
 ```bash
-voice-pet mock --offline --wake-text "小爱小爱" --user-text "今天天气怎么样"
+voice-pet mock --offline --wake-text "小爱小爱" --user-text "小爱今天天气怎么样"
 ```
 
 ## 运行流程
@@ -236,10 +237,10 @@ voice-pet mock --offline --wake-text "小爱小爱" --user-text "今天天气怎
 4. 匹配唤醒词别名
 5. 如果匹配“小爱”，立即播报 `主人，咋啦`
 6. 进入唤醒态，继续流式等待用户语音
-7. 用户语音经 MiMo ASR 转文字后转发给 PicoClaw gateway
+7. 用户语音经 MiMo ASR 转文字；只有以 `小爱` 开头的内容才转发给 PicoClaw gateway
 8. PicoClaw 返回回复文本
 9. 使用 MiMo TTS 合成回复并本地播放
-10. 播放后继续等待下一段用户语音；60 秒无新语音则退出唤醒态
+10. 播放后继续等待下一段带前缀的用户语音；60 秒没有可处理语音则退出唤醒态
 
 ## 说明
 

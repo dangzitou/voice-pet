@@ -166,10 +166,16 @@ class VoicePetStateMachine:
             if not user_text:
                 print("[session] empty user text")
                 continue
-            session_wake = self.detector.detect(user_text)
-            if session_wake.matched and not session_wake.cleaned_text:
-                print(f"[session] ignored wakeword text={user_text}")
+            session_wake = self.detector.detect_prefix(user_text)
+            if not session_wake.matched:
+                print(f"[session] ignored non-prefixed speech={user_text}")
                 user_text = ""
+                continue
+            if not session_wake.cleaned_text:
+                print(f"[session] ignored wakeword-only text={user_text}")
+                user_text = ""
+                continue
+            user_text = session_wake.cleaned_text
 
     def _handle_user_text(self, user_text: str) -> None:
         print(f"[think] user={user_text}")

@@ -19,7 +19,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run voice-pet MVP with mock TTS-generated input")
     parser.add_argument("--config", default="~/.picoclaw/voice-pet/config.json")
     parser.add_argument("--wake-text", default="小爱小爱")
-    parser.add_argument("--user-text", default="我今天心情不好")
+    parser.add_argument("--user-text", default="小爱我今天心情不好")
     parser.add_argument("--play", action="store_true", help="play generated audio locally")
     parser.add_argument("--offline", action="store_true", help="run without MiMo or PicoClaw network calls")
     args = parser.parse_args()
@@ -97,8 +97,22 @@ def main() -> None:
     user_audio = work_dir / "user.wav"
     user_audio.write_bytes(tts.synthesize(args.user_text))
     user_asr = asr.transcribe_file(str(user_audio)).strip()
-    local_reply = router.handle(user_asr) if router else None
-    reply_text = local_reply or brain.reply(user_asr)
+    session_wake = detector.detect_prefix(user_asr)
+    if not session_wake.matched:
+        print(f"user_text: {args.user_text}")
+        print(f"user_asr: {user_asr}")
+        print("user_ignored: missing wakeword prefix")
+        print(f"artifacts_dir: {work_dir}")
+        return
+    if not session_wake.cleaned_text:
+        print(f"user_text: {args.user_text}")
+        print(f"user_asr: {user_asr}")
+        print("user_ignored: wakeword-only text")
+        print(f"artifacts_dir: {work_dir}")
+        return
+    handled_text = session_wake.cleaned_text
+    local_reply = router.handle(handled_text) if router else None
+    reply_text = local_reply or brain.reply(handled_text)
     reply_text = _format_spoken_reply(
         reply_text,
         max_chars=int(runtime.get("spoken_reply_max_chars", 36)),
@@ -110,6 +124,7 @@ def main() -> None:
 
     print(f"user_text: {args.user_text}")
     print(f"user_asr: {user_asr}")
+    print(f"handled_text: {handled_text}")
     print(f"reply_text: {reply_text}")
     print(f"artifacts_dir: {work_dir}")
 
@@ -172,8 +187,13 @@ def run_offline_mock(wake_text: str, user_text: str) -> None:
         }
 
         machine = VoicePetStateMachine(cfg)
-        fake_capture = _OfflineCapture()
-        fake_asr = _OfflineASR([wake_text, user_text])
+        detector = WakewordDetector(cfg["wakeword"]["aliases"])
+        prefixed_user_text = user_text if detector.detect_prefix(user_text).matched else f"小爱{user_text}"
+        expected_user_text = detector.detect_prefix(prefixed_user_text).cleaned_text
+        ignored_user_text = "这句没有小爱前缀"
+
+        fake_capture = _OfflineCapture(max_calls_before_timeout=3)
+        fake_asr = _OfflineASR([wake_text, ignored_user_text, prefixed_user_text])
         fake_tts = _OfflineTTS()
         fake_brain = _OfflineBrain()
         fake_player = _OfflinePlayer()
@@ -186,29 +206,32 @@ def run_offline_mock(wake_text: str, user_text: str) -> None:
 
         machine.run_once()
 
-        if fake_brain.requests != [user_text]:
-            raise AssertionError(f"brain requests = {fake_brain.requests!r}, want {[user_text]!r}")
-        if fake_tts.texts != [f"mock picoclaw reply: {user_text}"]:
+        if fake_brain.requests != [expected_user_text]:
+            raise AssertionError(f"brain requests = {fake_brain.requests!r}, want {[expected_user_text]!r}")
+        if fake_tts.texts != [f"mock picoclaw reply: {expected_user_text}"]:
             raise AssertionError(f"tts texts = {fake_tts.texts!r}")
         if fake_player.paths[0] != str(ack_audio):
             raise AssertionError(f"ack player path = {fake_player.paths[0]!r}, want {str(ack_audio)!r}")
-        if fake_capture.calls != 3:
-            raise AssertionError(f"capture calls = {fake_capture.calls}, want 3")
+        if fake_capture.calls != 4:
+            raise AssertionError(f"capture calls = {fake_capture.calls}, want 4")
 
         print("offline_mock: ok")
         print(f"wake_text: {wake_text}")
         print(f"ack_audio_path: {fake_player.paths[0]}")
+        print(f"ignored_user_text: {ignored_user_text}")
+        print(f"prefixed_user_text: {prefixed_user_text}")
         print(f"user_text: {fake_brain.requests[0]}")
         print(f"reply_text: {fake_tts.texts[0]}")
 
 
 class _OfflineCapture:
-    def __init__(self) -> None:
+    def __init__(self, max_calls_before_timeout: int = 2) -> None:
         self.calls = 0
+        self.max_calls_before_timeout = max_calls_before_timeout
 
     def record_next_utterance(self, path: str, *args, **kwargs) -> str:
         self.calls += 1
-        if self.calls > 2:
+        if self.calls > self.max_calls_before_timeout:
             raise TimeoutError("offline session timeout")
         Path(path).write_bytes(b"offline-audio")
         return path
