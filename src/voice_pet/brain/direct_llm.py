@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import requests
+from ..mimo_endpoint import chat_completions_url, post_json_without_proxy
 
 VOICE_REPLY_SYSTEM = (
     "你现在是一个桌面语音助手。"
@@ -13,7 +13,7 @@ VOICE_REPLY_SYSTEM = (
 class DirectLLMAdapter:
     def __init__(self, api_key: str, api_base: str, model: str, timeout: int = 120):
         self.api_key = api_key
-        self.api_base = api_base
+        self.api_base = chat_completions_url(api_base)
         self.model = model
         self.timeout = timeout
 
@@ -26,9 +26,9 @@ class DirectLLMAdapter:
             ],
             "stream": False,
         }
-        resp = requests.post(
+        resp = post_json_without_proxy(
             self.api_base,
-            json=payload,
+            payload,
             headers={
                 "Api-Key": self.api_key,
                 "Content-Type": "application/json",

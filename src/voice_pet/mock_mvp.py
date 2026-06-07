@@ -84,7 +84,7 @@ def main() -> None:
         if args.play:
             player.play_file(str(ack_audio))
     else:
-        ack_text = wakeword_cfg.get("ack_text", "主人咋啦")
+        ack_text = wakeword_cfg.get("ack_text", "主人，咋啦")
         ack_audio = work_dir / "ack.wav"
         ack_audio.write_bytes(tts.synthesize(ack_text))
         if args.play:
@@ -143,7 +143,7 @@ def run_offline_mock(wake_text: str, user_text: str) -> None:
                 "aliases": ["小爱", "小艾", "小ai", "xiao ai", "xiaoai"],
                 "cooldown_seconds": 0.0,
                 "session_timeout_seconds": 60.0,
-                "ack_text": "主人咋啦",
+                "ack_text": "主人，咋啦",
                 "ack_audio_path": str(ack_audio),
             },
             "runtime": {

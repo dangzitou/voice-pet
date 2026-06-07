@@ -13,7 +13,7 @@ It runs outside PicoClaw and handles microphone capture, streaming voice activit
 - Local streaming voice activity detection to reduce idle ASR requests
 - Local playback via `aplay`
 - Wakeword alias matching: `小爱`, `小艾`, `小ai`, `xiao ai`, `xiaoai`
-- Immediate wake acknowledgement with `主人咋啦`
+- Immediate wake acknowledgement with `主人，咋啦`
 - Wake-session speech transcription and forwarding to PicoClaw
 - Automatic wake-session timeout after 60 seconds without user speech
 - Optional PicoClaw gateway process management
@@ -87,7 +87,7 @@ You can also use the configuration CLI to create, inspect, and update voice mode
 PYTHONPATH=src python3 -m voice_pet.config_cli init --config ./config.json
 PYTHONPATH=src python3 -m voice_pet.config_cli show --config ./config.json
 PYTHONPATH=src python3 -m voice_pet.config_cli set --config ./config.json \
-  --base-url https://api.xiaomimimo.com/v1/chat/completions \
+  --base-url https://token-plan-cn.xiaomimimo.com/v1 \
   --api-key "<your-mimo-token>" \
   --model-name mimo-v2.5 \
   --asr-model-name mimo-v2.5-asr \
@@ -101,14 +101,14 @@ PYTHONPATH=src python3 -m voice_pet.config_cli set --config ./config.json \
 
 Supported voice model fields are: `--api-key`, `--clear-api-key`, `--api-base` / `--base-url`, `--model` / `--llm-model` / `--model-name`, `--asr-model` / `--asr-model-name`, `--tts-model` / `--tts-model-name`, `--tts-voice`, `--tts-format`, and `--language`. `show` only prints whether the API key is configured; it does not print the key.
 
-To prebuild the `主人咋啦` wake acknowledgement, synthesize it once and then save the path in config:
+To prebuild the `主人，咋啦` wake acknowledgement, synthesize it once and then save the path in config:
 
 ```bash
 PYTHONPATH=src python3 -m voice_pet.demo_loop --config ./config.json \
-  --text "主人咋啦" \
+  --text "主人，咋啦" \
   --output ~/.picoclaw/voice-pet/runtime/ack.wav
 PYTHONPATH=src python3 -m voice_pet.config_cli set --config ./config.json \
-  --ack-text "主人咋啦" \
+  --ack-text "主人，咋啦" \
   --ack-audio-path ~/.picoclaw/voice-pet/runtime/ack.wav
 ```
 
@@ -155,7 +155,7 @@ Run the TTS / ASR demo:
 
 ```bash
 cd ~/.picoclaw/voice-pet
-PYTHONPATH=src python3 -m voice_pet.demo_loop --config ~/.picoclaw/voice-pet/config.json --text "主人咋啦"
+PYTHONPATH=src python3 -m voice_pet.demo_loop --config ~/.picoclaw/voice-pet/config.json --text "主人，咋啦"
 ```
 
 Run the mock end-to-end test:
@@ -177,7 +177,7 @@ PYTHONPATH=src python3 -m voice_pet.mock_mvp --offline --wake-text "小爱小爱
 2. Capture a wake candidate after a full speech segment is detected
 3. Transcribe the candidate audio with MiMo ASR
 4. Match wakeword aliases
-5. If the wakeword matches, immediately acknowledge with `主人咋啦`
+5. If the wakeword matches, immediately acknowledge with `主人，咋啦`
 6. Enter wake mode and continue waiting for user speech
 7. Transcribe user speech with MiMo ASR and forward the text to PicoClaw gateway
 8. Receive the reply text from PicoClaw

@@ -60,7 +60,7 @@ class VoicePetStateMachine:
         self.gateway = PicoClawGatewayProcess(runtime)
         self.router = build_default_router() if runtime.get("enable_local_actions", False) else None
         self.detector = WakewordDetector(wakeword.get("aliases", []))
-        self.ack_text = wakeword.get("ack_text", "主人咋啦")
+        self.ack_text = wakeword.get("ack_text", "主人，咋啦")
         ack_audio_path = str(wakeword.get("ack_audio_path", "")).strip()
         self.ack_audio_path = Path(ack_audio_path).expanduser() if ack_audio_path else None
         self.cooldown_seconds = float(wakeword.get("cooldown_seconds", 3.0))

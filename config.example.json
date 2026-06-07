@@ -1,7 +1,7 @@
 {
   "mimo": {
     "api_key": "",
-    "api_base": "https://api.xiaomimimo.com/v1/chat/completions",
+    "api_base": "https://token-plan-cn.xiaomimimo.com/v1",
     "asr_model": "mimo-v2.5-asr",
     "tts_model": "mimo-v2.5-tts",
     "llm_model": "mimo-v2.5",
@@ -30,7 +30,7 @@
     "aliases": ["小爱", "小艾", "小ai", "xiao ai", "xiaoai"],
     "cooldown_seconds": 3.0,
     "session_timeout_seconds": 60.0,
-    "ack_text": "主人咋啦",
+    "ack_text": "主人，咋啦",
     "ack_audio_path": ""
   },
   "runtime": {

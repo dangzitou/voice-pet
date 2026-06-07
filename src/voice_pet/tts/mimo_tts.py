@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import base64
 
-import requests
+from ..mimo_endpoint import chat_completions_url, post_json_without_proxy
 
 
 class MimoTTS:
     def __init__(self, api_key: str, api_base: str, model: str, voice: str = "mimo_default", fmt: str = "wav", timeout: int = 120):
         self.api_key = api_key
-        self.api_base = api_base
+        self.api_base = chat_completions_url(api_base)
         self.model = model
         self.voice = voice
         self.fmt = fmt
@@ -26,9 +26,9 @@ class MimoTTS:
             },
             "stream": False,
         }
-        resp = requests.post(
+        resp = post_json_without_proxy(
             self.api_base,
-            json=payload,
+            payload,
             headers={
                 "Api-Key": self.api_key,
                 "Content-Type": "application/json",

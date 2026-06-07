@@ -12,7 +12,7 @@ from .player import AudioPlayer
 def main() -> None:
     parser = argparse.ArgumentParser(description="MiMo local loop demo")
     parser.add_argument("--config", default="~/.picoclaw/voice-pet/config.json")
-    parser.add_argument("--text", default="主人咋啦")
+    parser.add_argument("--text", default="主人，咋啦")
     parser.add_argument("--output", default="~/.picoclaw/voice-pet/runtime/demo_tts.wav")
     parser.add_argument("--transcribe", default="", help="如果提供音频文件，则额外做一次 ASR")
     args = parser.parse_args()

@@ -3,13 +3,13 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
-import requests
+from ..mimo_endpoint import chat_completions_url, post_json_without_proxy
 
 
 class MimoASR:
     def __init__(self, api_key: str, api_base: str, model: str, language: str = "zh", timeout: int = 120):
         self.api_key = api_key
-        self.api_base = api_base
+        self.api_base = chat_completions_url(api_base)
         self.model = model
         self.language = language
         self.timeout = timeout
@@ -40,9 +40,9 @@ class MimoASR:
                 }
             },
         }
-        resp = requests.post(
+        resp = post_json_without_proxy(
             self.api_base,
-            json=payload,
+            payload,
             headers={
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",

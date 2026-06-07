@@ -13,7 +13,7 @@ English README: [README.en.md](./README.en.md)
 - 使用本地流式语音活动检测减少空闲态 ASR 请求
 - 使用 `aplay` 进行本地播放
 - 支持唤醒词别名匹配：`小爱`、`小艾`、`小ai`、`xiao ai`、`xiaoai`
-- 唤醒后立即播报 `主人咋啦`
+- 唤醒后立即播报 `主人，咋啦`
 - 唤醒态内连续语音转写并转发给 PicoClaw
 - 60 秒没有新的用户语音时自动退出唤醒态
 - 可选启动和管理 PicoClaw gateway 进程
@@ -87,7 +87,7 @@ export PICOCLAW_TOKEN="<your-pico-token>"
 PYTHONPATH=src python3 -m voice_pet.config_cli init --config ./config.json
 PYTHONPATH=src python3 -m voice_pet.config_cli show --config ./config.json
 PYTHONPATH=src python3 -m voice_pet.config_cli set --config ./config.json \
-  --base-url https://api.xiaomimimo.com/v1/chat/completions \
+  --base-url https://token-plan-cn.xiaomimimo.com/v1 \
   --api-key "<your-mimo-token>" \
   --model-name mimo-v2.5 \
   --asr-model-name mimo-v2.5-asr \
@@ -101,14 +101,14 @@ PYTHONPATH=src python3 -m voice_pet.config_cli set --config ./config.json \
 
 支持修改的语音模型字段包括：`--api-key`、`--clear-api-key`、`--api-base` / `--base-url`、`--model` / `--llm-model` / `--model-name`、`--asr-model` / `--asr-model-name`、`--tts-model` / `--tts-model-name`、`--tts-voice`、`--tts-format`、`--language`。`show` 只会显示 API key 是否已配置，不会把 key 打印出来。
 
-如果要把“主人咋啦”预制成音频，先用 TTS demo 生成一次，再把路径写入配置：
+如果要把“主人，咋啦”预制成音频，先用 TTS demo 生成一次，再把路径写入配置：
 
 ```bash
 PYTHONPATH=src python3 -m voice_pet.demo_loop --config ./config.json \
-  --text "主人咋啦" \
+  --text "主人，咋啦" \
   --output ~/.picoclaw/voice-pet/runtime/ack.wav
 PYTHONPATH=src python3 -m voice_pet.config_cli set --config ./config.json \
-  --ack-text "主人咋啦" \
+  --ack-text "主人，咋啦" \
   --ack-audio-path ~/.picoclaw/voice-pet/runtime/ack.wav
 ```
 
@@ -155,7 +155,7 @@ PYTHONPATH=src python3 -m voice_pet.main --config ~/.picoclaw/voice-pet/config.j
 
 ```bash
 cd ~/.picoclaw/voice-pet
-PYTHONPATH=src python3 -m voice_pet.demo_loop --config ~/.picoclaw/voice-pet/config.json --text "主人咋啦"
+PYTHONPATH=src python3 -m voice_pet.demo_loop --config ~/.picoclaw/voice-pet/config.json --text "主人，咋啦"
 ```
 
 运行 mock 闭环测试：
@@ -177,7 +177,7 @@ PYTHONPATH=src python3 -m voice_pet.mock_mvp --offline --wake-text "小爱小爱
 2. 检测到一段完整语音后写入候选唤醒音频
 3. 使用 MiMo ASR 转写候选音频
 4. 匹配唤醒词别名
-5. 如果匹配“小爱”，立即播报 `主人咋啦`
+5. 如果匹配“小爱”，立即播报 `主人，咋啦`
 6. 进入唤醒态，继续流式等待用户语音
 7. 用户语音经 MiMo ASR 转文字后转发给 PicoClaw gateway
 8. PicoClaw 返回回复文本
