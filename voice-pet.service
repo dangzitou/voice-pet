@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=%h/.picoclaw/voice-pet
 Environment=PYTHONPATH=%h/.picoclaw/voice-pet/src
+EnvironmentFile=-%h/.picoclaw/voice-pet/voice-pet.env
 ExecStart=/usr/bin/python3 -m voice_pet.main --config %h/.picoclaw/voice-pet/config.json
 Restart=always
 RestartSec=3

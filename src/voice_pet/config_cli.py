@@ -12,6 +12,7 @@ DEFAULT_CONFIG_PATH = "~/.picoclaw/voice-pet/config.json"
 
 
 MODEL_FIELDS = {
+    "api_key": "mimo.api_key",
     "api_base": "mimo.api_base",
     "asr_model": "mimo.asr_model",
     "tts_model": "mimo.tts_model",
@@ -19,6 +20,29 @@ MODEL_FIELDS = {
     "language": "mimo.language",
     "tts_voice": "mimo.tts_voice",
     "tts_format": "mimo.tts_format",
+}
+
+
+RUNTIME_FIELDS = {
+    "brain": "runtime.brain",
+    "picoclaw_ws_url": "runtime.picoclaw_ws_url",
+    "picoclaw_session_id": "runtime.picoclaw_session_id",
+    "picoclaw_node_script": "runtime.picoclaw_node_script",
+    "enable_local_actions": "runtime.enable_local_actions",
+    "picoclaw_manage_gateway": "runtime.picoclaw_manage_gateway",
+    "picoclaw_gateway_command": "runtime.picoclaw_gateway_command",
+    "picoclaw_gateway_args": "runtime.picoclaw_gateway_args",
+    "picoclaw_gateway_cwd": "runtime.picoclaw_gateway_cwd",
+    "picoclaw_gateway_ready_url": "runtime.picoclaw_gateway_ready_url",
+    "picoclaw_gateway_start_timeout_seconds": "runtime.picoclaw_gateway_start_timeout_seconds",
+    "picoclaw_gateway_stop_timeout_seconds": "runtime.picoclaw_gateway_stop_timeout_seconds",
+}
+
+
+WAKEWORD_FIELDS = {
+    "ack_text": "wakeword.ack_text",
+    "ack_audio_path": "wakeword.ack_audio_path",
+    "session_timeout_seconds": "wakeword.session_timeout_seconds",
 }
 
 
@@ -48,13 +72,93 @@ def main() -> None:
 
     set_parser = subparsers.add_parser("set", help="update model configuration")
     _add_subcommand_config_arg(set_parser)
-    set_parser.add_argument("--api-base", dest="api_base", help="MiMo API endpoint")
-    set_parser.add_argument("--asr-model", dest="asr_model", help="ASR model name")
-    set_parser.add_argument("--tts-model", dest="tts_model", help="TTS model name")
-    set_parser.add_argument("--model", "--llm-model", dest="llm_model", help="text reply model name")
+    api_key = set_parser.add_mutually_exclusive_group()
+    api_key.add_argument("--api-key", dest="api_key", help="MiMo API key saved in config.json")
+    api_key.add_argument(
+        "--clear-api-key",
+        dest="clear_api_key",
+        action="store_true",
+        help="remove the MiMo API key from config.json",
+    )
+    set_parser.add_argument("--api-base", "--base-url", "--baseurl", dest="api_base", help="MiMo API endpoint")
+    set_parser.add_argument("--asr-model", "--asr-model-name", dest="asr_model", help="ASR model name")
+    set_parser.add_argument("--tts-model", "--tts-model-name", dest="tts_model", help="TTS model name")
+    set_parser.add_argument("--model", "--llm-model", "--model-name", dest="llm_model", help="text reply model name")
     set_parser.add_argument("--language", dest="language", help="ASR language, for example: zh")
     set_parser.add_argument("--tts-voice", dest="tts_voice", help="TTS voice name")
     set_parser.add_argument("--tts-format", dest="tts_format", help="TTS audio format, for example: wav")
+    set_parser.add_argument("--ack-text", dest="ack_text", help="wake acknowledgement text")
+    set_parser.add_argument(
+        "--ack-audio-path",
+        dest="ack_audio_path",
+        help="prebuilt wake acknowledgement audio file; falls back to ack text TTS if missing",
+    )
+    set_parser.add_argument(
+        "--wake-session-timeout",
+        dest="session_timeout_seconds",
+        type=float,
+        help="seconds to stay in wake mode without new user speech",
+    )
+    set_parser.add_argument(
+        "--brain",
+        choices=("picoclaw", "direct_llm"),
+        help="reply backend; picoclaw is the normal runtime core, direct_llm is for debugging",
+    )
+    set_parser.add_argument("--picoclaw-ws-url", dest="picoclaw_ws_url", help="PicoClaw gateway WebSocket URL")
+    set_parser.add_argument("--picoclaw-session-id", dest="picoclaw_session_id", help="PicoClaw session id")
+    set_parser.add_argument(
+        "--picoclaw-node-script",
+        dest="picoclaw_node_script",
+        help="path to pico_bridge_once.js",
+    )
+    gateway_management = set_parser.add_mutually_exclusive_group()
+    gateway_management.add_argument(
+        "--manage-picoclaw-gateway",
+        dest="picoclaw_manage_gateway",
+        action="store_true",
+        default=None,
+        help="start and stop PicoClaw gateway from voice-pet",
+    )
+    gateway_management.add_argument(
+        "--no-manage-picoclaw-gateway",
+        dest="picoclaw_manage_gateway",
+        action="store_false",
+        help="connect to an already-running PicoClaw gateway",
+    )
+    set_parser.add_argument("--picoclaw-gateway-command", dest="picoclaw_gateway_command", help="PicoClaw command")
+    set_parser.add_argument(
+        "--picoclaw-gateway-args",
+        dest="picoclaw_gateway_args",
+        help='PicoClaw gateway command args, for example: "gateway --debug"',
+    )
+    set_parser.add_argument("--picoclaw-gateway-cwd", dest="picoclaw_gateway_cwd", help="PicoClaw gateway working directory")
+    set_parser.add_argument("--picoclaw-gateway-ready-url", dest="picoclaw_gateway_ready_url", help="PicoClaw /ready URL")
+    set_parser.add_argument(
+        "--picoclaw-gateway-start-timeout",
+        dest="picoclaw_gateway_start_timeout_seconds",
+        type=float,
+        help="seconds to wait for managed gateway startup",
+    )
+    set_parser.add_argument(
+        "--picoclaw-gateway-stop-timeout",
+        dest="picoclaw_gateway_stop_timeout_seconds",
+        type=float,
+        help="seconds to wait for managed gateway shutdown",
+    )
+    local_actions = set_parser.add_mutually_exclusive_group()
+    local_actions.add_argument(
+        "--enable-local-actions",
+        dest="enable_local_actions",
+        action="store_true",
+        default=None,
+        help="allow local action_router handlers before PicoClaw",
+    )
+    local_actions.add_argument(
+        "--disable-local-actions",
+        dest="enable_local_actions",
+        action="store_false",
+        help="send replies to the configured brain without local action routing",
+    )
     set_parser.set_defaults(func=_cmd_set)
 
     args = parser.parse_args()
@@ -83,23 +187,31 @@ def _cmd_init(args: argparse.Namespace) -> None:
 def _cmd_show(args: argparse.Namespace) -> None:
     config_path = Path(args.config).expanduser()
     data = _read_config(config_path)
-    values = _model_values(data)
+    values = _config_values(data)
 
     if args.json:
         print(json.dumps(values, ensure_ascii=False, indent=2))
         return
 
     print(f"config: {config_path}")
-    for key, value in values.items():
+    for key, value in values["mimo"].items():
         print(f"{MODEL_FIELDS[key]}={value}")
+    for key, value in values["wakeword"].items():
+        print(f"{WAKEWORD_FIELDS[key]}={value}")
+    for key, value in values["runtime"].items():
+        print(f"{RUNTIME_FIELDS[key]}={value}")
     env_state = "set" if os.getenv("MIMO_API_KEY", "").strip() else "not set"
     print(f"MIMO_API_KEY={env_state}")
+    pico_token_state = "set" if os.getenv("PICOCLAW_TOKEN", "").strip() else "not set"
+    print(f"PICOCLAW_TOKEN={pico_token_state}")
 
 
 def _cmd_set(args: argparse.Namespace) -> None:
     config_path = Path(args.config).expanduser()
     data = _read_config(config_path)
     mimo = data.setdefault("mimo", {})
+    wakeword = data.setdefault("wakeword", {})
+    runtime = data.setdefault("runtime", {})
 
     changes: list[str] = []
     for key, path in MODEL_FIELDS.items():
@@ -108,11 +220,37 @@ def _cmd_set(args: argparse.Namespace) -> None:
             continue
         old_value = str(mimo.get(key, ""))
         mimo[key] = value
+        if old_value != value and key == "api_key":
+            changes.append(f"{path}: {_secret_state(old_value)} -> {_secret_state(value)}")
+        elif old_value != value:
+            changes.append(f"{path}: {old_value} -> {value}")
+
+    if getattr(args, "clear_api_key", False):
+        old_value = str(mimo.get("api_key", ""))
+        mimo["api_key"] = ""
+        if old_value:
+            changes.append(f"{MODEL_FIELDS['api_key']}: set -> not set")
+
+    for key, path in RUNTIME_FIELDS.items():
+        value = getattr(args, key, None)
+        if value is None:
+            continue
+        old_value = runtime.get(key, "")
+        runtime[key] = value
+        if old_value != value:
+            changes.append(f"{path}: {old_value} -> {value}")
+
+    for key, path in WAKEWORD_FIELDS.items():
+        value = getattr(args, key, None)
+        if value is None:
+            continue
+        old_value = wakeword.get(key, "")
+        wakeword[key] = value
         if old_value != value:
             changes.append(f"{path}: {old_value} -> {value}")
 
     if not changes:
-        print("no model configuration changes")
+        print("no configuration changes")
         return
 
     _write_config(config_path, data)
@@ -140,11 +278,55 @@ def _write_config(path: Path, data: dict[str, Any]) -> None:
         f.write("\n")
 
 
-def _model_values(data: dict[str, Any]) -> dict[str, str]:
+def _config_values(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
     mimo = data.get("mimo", {})
     if not isinstance(mimo, dict):
         mimo = {}
-    return {key: str(mimo.get(key, "")) for key in MODEL_FIELDS}
+    runtime = data.get("runtime", {})
+    if not isinstance(runtime, dict):
+        runtime = {}
+    wakeword = data.get("wakeword", {})
+    if not isinstance(wakeword, dict):
+        wakeword = {}
+    return {
+        "mimo": {
+            key: _mimo_value(mimo, key)
+            for key in MODEL_FIELDS
+        },
+        "wakeword": {
+            key: _wakeword_value(wakeword, key)
+            for key in WAKEWORD_FIELDS
+        },
+        "runtime": {
+            key: _runtime_value(runtime, key)
+            for key in RUNTIME_FIELDS
+        },
+    }
+
+
+def _mimo_value(mimo: dict[str, Any], key: str) -> str:
+    value = str(mimo.get(key, ""))
+    if key == "api_key":
+        return _secret_state(value)
+    return value
+
+
+def _secret_state(value: str) -> str:
+    return "set" if value.strip() else "not set"
+
+
+def _runtime_value(runtime: dict[str, Any], key: str) -> Any:
+    value = runtime.get(key, "")
+    if key in {"enable_local_actions", "picoclaw_manage_gateway"}:
+        return bool(value)
+    return value
+
+
+def _wakeword_value(wakeword: dict[str, Any], key: str) -> str | float:
+    value = wakeword.get(key, "")
+    if key == "session_timeout_seconds" and value != "":
+        return float(value)
+    return str(value)
 
 
 def _find_example_path(path: str) -> Path:

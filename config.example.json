@@ -29,15 +29,26 @@
   "wakeword": {
     "aliases": ["小爱", "小艾", "小ai", "xiao ai", "xiaoai"],
     "cooldown_seconds": 3.0,
-    "ack_text": "主人，咋啦"
+    "session_timeout_seconds": 60.0,
+    "ack_text": "主人咋啦",
+    "ack_audio_path": ""
   },
   "runtime": {
     "work_dir": "~/.picoclaw/voice-pet/runtime",
     "poll_interval_seconds": 0.2,
     "request_timeout_seconds": 120,
-    "brain": "direct_llm",
+    "brain": "picoclaw",
+    "enable_local_actions": false,
     "picoclaw_ws_url": "ws://127.0.0.1:18790/pico/ws",
     "picoclaw_token": "",
-    "picoclaw_session_id": "voice-pet"
+    "picoclaw_session_id": "voice-pet",
+    "picoclaw_node_script": "~/.picoclaw/voice-pet/pico_bridge_once.js",
+    "picoclaw_manage_gateway": false,
+    "picoclaw_gateway_command": "picoclaw",
+    "picoclaw_gateway_args": ["gateway"],
+    "picoclaw_gateway_cwd": "",
+    "picoclaw_gateway_ready_url": "http://127.0.0.1:18790/ready",
+    "picoclaw_gateway_start_timeout_seconds": 20.0,
+    "picoclaw_gateway_stop_timeout_seconds": 10.0
   }
 }
