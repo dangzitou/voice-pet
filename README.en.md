@@ -14,6 +14,7 @@ It runs outside PicoClaw and handles microphone capture, wakeword detection, spe
 - Wakeword alias matching: `小爱`, `小艾`, `小ai`, `xiao ai`, `xiaoai`
 - Single-turn voice interaction state machine
 - Pluggable action router for weather, music, and device actions
+- Optional PicoClaw gateway backend for reply generation
 
 ## Status
 
@@ -34,14 +35,17 @@ Not implemented yet:
 
 ```text
 src/voice_pet/
-├── main.py              # CLI entrypoint
-├── state_machine.py     # runtime loop
-├── audio_capture.py     # recording and silence cut-off
-├── wakeword.py          # wakeword alias matching
-├── action_router.py     # action routing hooks
-├── asr/mimo_asr.py      # MiMo ASR client
-├── tts/mimo_tts.py      # MiMo TTS client
-└── brain/direct_llm.py  # MiMo text reply client
+├── main.py                # CLI entrypoint
+├── state_machine.py       # runtime loop
+├── audio_capture.py       # recording and silence cut-off
+├── wakeword.py            # wakeword alias matching
+├── action_router.py       # action routing hooks
+├── mock_mvp.py            # mock end-to-end test using TTS-generated input
+├── asr/mimo_asr.py        # MiMo ASR client
+├── tts/mimo_tts.py        # MiMo TTS client
+├── brain/direct_llm.py    # direct MiMo text reply backend
+└── brain/picoclaw.py      # PicoClaw gateway bridge adapter
+pico_bridge_once.js        # Node WebSocket helper for PicoClaw bridge
 ```
 
 ## Requirements
@@ -68,6 +72,13 @@ export MIMO_API_KEY="<your-token>"
 
 You can also place the key in `config.json`, though environment variables are preferred.
 
+If you want PicoClaw to be the reply backend, also set these fields in `config.json`:
+
+- `runtime.brain = "picoclaw"`
+- `runtime.picoclaw_ws_url`
+- `runtime.picoclaw_token`
+- `runtime.picoclaw_session_id`
+
 ## Run
 
 Start the main loop:
@@ -82,6 +93,13 @@ Run the TTS / ASR demo:
 ```bash
 cd ~/.picoclaw/voice-pet
 PYTHONPATH=src python3 -m voice_pet.demo_loop --config ~/.picoclaw/voice-pet/config.json --text "主人，咋啦"
+```
+
+Run the mock end-to-end test:
+
+```bash
+cd ~/.picoclaw/voice-pet
+PYTHONPATH=src python3 -m voice_pet.mock_mvp --config ~/.picoclaw/voice-pet/config.json --wake-text "小爱小爱" --user-text "你好，请只回复：ok"
 ```
 
 ## Runtime Flow
