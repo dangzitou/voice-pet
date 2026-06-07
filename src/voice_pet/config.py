@@ -28,10 +28,16 @@ def load_config(path: str) -> dict[str, Any]:
     wakeword = data.setdefault("wakeword", {})
     _set_env_override(wakeword, "ack_text", "VOICE_PET_ACK_TEXT")
     _set_env_override(wakeword, "ack_audio_path", "VOICE_PET_ACK_AUDIO_PATH")
+    _set_env_override(wakeword, "ack_texts", "VOICE_PET_ACK_TEXTS")
+    _set_env_override(wakeword, "ack_audio_paths", "VOICE_PET_ACK_AUDIO_PATHS")
+    _set_env_override(wakeword, "thinking_prompt_delay_seconds", "VOICE_PET_THINKING_PROMPT_DELAY_SECONDS")
 
     audio = data.setdefault("audio", {})
     _set_env_override(audio, "playback_command", "VOICE_PET_PLAYBACK_COMMAND")
     _set_env_override(audio, "playback_device", "VOICE_PET_PLAYBACK_DEVICE")
+
+    mimo = data.setdefault("mimo", {})
+    _set_env_override(mimo, "tts_style_prompt", "VOICE_PET_TTS_STYLE_PROMPT")
 
     runtime = data.setdefault("runtime", {})
     _set_env_override(runtime, "brain", "VOICE_PET_BRAIN")

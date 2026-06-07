@@ -4,6 +4,12 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+VOICE_REPLY_PROMPT = (
+    "请用非常简短、自然、口语化的中文回答。"
+    "不要使用 markdown、emoji、列表、代码块。"
+    "通常控制在 1 到 2 句话，优先直接回答。"
+)
+
 
 @dataclass(slots=True)
 class PicoBridgeConfig:
@@ -19,6 +25,7 @@ class PicoClawAdapter:
         self.cfg = cfg
 
     def reply(self, text: str) -> str:
+        content = f"{VOICE_REPLY_PROMPT}\n\n用户问题：{text}"
         script = str(Path(self.cfg.node_script).expanduser())
         proc = subprocess.run(
             [
@@ -27,7 +34,7 @@ class PicoClawAdapter:
                 self.cfg.url,
                 self.cfg.token,
                 self.cfg.session_id,
-                text,
+                content,
                 str(self.cfg.timeout_seconds),
             ],
             check=True,

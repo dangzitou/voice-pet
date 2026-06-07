@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import re
+import secrets
 import time
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from pathlib import Path
 
 from ..audio.capture import AudioCapture
@@ -38,7 +40,15 @@ class VoicePetStateMachine:
         )
         timeout = int(runtime.get("request_timeout_seconds", 120))
         self.asr = MimoASR(api_key, mimo["api_base"], mimo["asr_model"], mimo.get("language", "zh"), timeout)
-        self.tts = MimoTTS(api_key, mimo["api_base"], mimo["tts_model"], mimo.get("tts_voice", "mimo_default"), mimo.get("tts_format", "wav"), timeout)
+        self.tts = MimoTTS(
+            api_key,
+            mimo["api_base"],
+            mimo["tts_model"],
+            mimo.get("tts_voice", "mimo_default"),
+            mimo.get("tts_format", "wav"),
+            timeout,
+            mimo.get("tts_style_prompt", ""),
+        )
         brain_kind = str(runtime.get("brain", "picoclaw")).strip().lower()
         if brain_kind == "picoclaw":
             token = runtime.get("picoclaw_token", "").strip()
@@ -67,6 +77,21 @@ class VoicePetStateMachine:
         self.ack_text = wakeword.get("ack_text", "主人，咋啦")
         ack_audio_path = str(wakeword.get("ack_audio_path", "")).strip()
         self.ack_audio_path = Path(ack_audio_path).expanduser() if ack_audio_path else None
+        ack_texts = wakeword.get("ack_texts", [])
+        if not isinstance(ack_texts, list):
+            ack_texts = []
+        self.ack_texts = [str(text).strip() for text in ack_texts if str(text).strip()]
+        ack_audio_paths = wakeword.get("ack_audio_paths", [])
+        if not isinstance(ack_audio_paths, list):
+            ack_audio_paths = []
+        self.ack_audio_paths = [Path(str(path)).expanduser() for path in ack_audio_paths if str(path).strip()]
+        self.ack_variant_paths = self._prepare_ack_variant_paths()
+        self.thinking_prompt_delay_seconds = float(wakeword.get("thinking_prompt_delay_seconds", 5.0))
+        prompt_texts = wakeword.get("thinking_prompt_texts", [])
+        if not isinstance(prompt_texts, list):
+            prompt_texts = []
+        self.thinking_prompt_texts = [str(text).strip() for text in prompt_texts if str(text).strip()]
+        self.thinking_prompt_paths = self._prepare_thinking_prompt_paths()
         self.wake_max_extra_chars = int(wakeword.get("max_extra_chars", 6))
         self.cooldown_seconds = float(wakeword.get("cooldown_seconds", 3.0))
         self.session_timeout_seconds = float(wakeword.get("session_timeout_seconds", 60.0))
@@ -110,7 +135,7 @@ class VoicePetStateMachine:
 
         idle_path = self.work_dir / "wake-candidate.wav"
         self._record_wake_candidate(idle_path)
-        heard = self.asr.transcribe_file(str(idle_path))
+        heard = self._time_call("idle_asr", self.asr.transcribe_file, str(idle_path))
         heard = heard.strip()
         if not heard:
             print("[idle] heard nothing")
@@ -130,9 +155,19 @@ class VoicePetStateMachine:
         self._run_wake_session()
 
     def play_ack(self) -> None:
+        ack_variant = self._pick_ack_variant()
+        if ack_variant is not None:
+            ack_path, ack_text = ack_variant
+            try:
+                self._ensure_ack_audio(ack_path, ack_text)
+                print(f"[wake] ack_audio={ack_path}")
+                self._time_call("wake_ack_play", self.player.play_file, str(ack_path))
+                return
+            except Exception as exc:
+                print(f"[wake] ack_audio_failed={exc}")
         if self.ack_audio_path and self.ack_audio_path.is_file():
             print(f"[wake] ack_audio={self.ack_audio_path}")
-            self.player.play_file(str(self.ack_audio_path))
+            self._time_call("wake_ack_play", self.player.play_file, str(self.ack_audio_path))
             return
         if self.ack_audio_path:
             print(f"[wake] ack_audio missing, fallback_tts={self.ack_audio_path}")
@@ -162,7 +197,7 @@ class VoicePetStateMachine:
                 print("[session] no user speech before timeout, waiting for wakeword")
                 return
 
-            user_text = self.asr.transcribe_file(str(user_audio)).strip()
+            user_text = self._time_call("session_asr", self.asr.transcribe_file, str(user_audio)).strip()
             if not user_text:
                 print("[session] empty user text")
                 continue
@@ -180,7 +215,7 @@ class VoicePetStateMachine:
     def _handle_user_text(self, user_text: str) -> None:
         print(f"[think] user={user_text}")
         local_reply = self.router.handle(user_text) if self.router else None
-        reply = local_reply or self.brain.reply(user_text)
+        reply = local_reply or self._reply_with_waiting_prompt(user_text)
         reply = _format_spoken_reply(
             reply,
             max_chars=self.spoken_reply_max_chars,
@@ -191,18 +226,96 @@ class VoicePetStateMachine:
         print(f"[speak] reply={reply}")
         self.say(reply, prefix="reply")
 
+    def _reply_with_waiting_prompt(self, user_text: str) -> str:
+        if self.thinking_prompt_delay_seconds <= 0 or not self.thinking_prompt_texts:
+            return self._time_call("brain_reply", self.brain.reply, user_text)
+
+        started_at = time.monotonic()
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(self.brain.reply, user_text)
+            try:
+                reply = future.result(timeout=self.thinking_prompt_delay_seconds)
+                elapsed_ms = (time.monotonic() - started_at) * 1000
+                print(f"[timing] brain_reply={elapsed_ms:.0f}ms prompt_triggered=no")
+                return reply
+            except FutureTimeoutError:
+                elapsed_ms = (time.monotonic() - started_at) * 1000
+                print(
+                    f"[timing] brain_reply_waited={elapsed_ms:.0f}ms "
+                    f"prompt_delay={self.thinking_prompt_delay_seconds:.1f}s prompt_triggered=yes"
+                )
+                self.play_thinking_prompt()
+                reply = future.result()
+                total_ms = (time.monotonic() - started_at) * 1000
+                print(f"[timing] brain_reply_total={total_ms:.0f}ms prompt_triggered=yes")
+                return reply
+
+    def play_thinking_prompt(self) -> None:
+        prompt_path = self._pick_thinking_prompt_path()
+        if prompt_path is None:
+            return
+        try:
+            self._ensure_prompt_audio(prompt_path)
+            print(f"[think] prompt_audio={prompt_path}")
+            self._time_call("think_prompt_play", self.player.play_file, str(prompt_path))
+        except Exception as exc:
+            print(f"[think] prompt_audio_failed={exc}")
+
+    def _prepare_thinking_prompt_paths(self) -> list[Path]:
+        prompt_dir = self.work_dir / "thinking-prompts"
+        return [prompt_dir / f"prompt-{index + 1:02d}.wav" for index, _ in enumerate(self.thinking_prompt_texts)]
+
+    def _prepare_ack_variant_paths(self) -> list[Path]:
+        ack_dir = self.work_dir / "ack-variants"
+        return [ack_dir / f"ack-{index + 1:02d}.wav" for index, _ in enumerate(self.ack_texts)]
+
+    def _pick_ack_variant(self) -> tuple[Path, str] | None:
+        variants: list[tuple[Path, str]] = []
+        for path in self.ack_audio_paths:
+            variants.append((path, ""))
+        for index, path in enumerate(self.ack_variant_paths):
+            variants.append((path, self.ack_texts[index]))
+        if not variants:
+            return None
+        return secrets.choice(variants)
+
+    def _pick_thinking_prompt_path(self) -> Path | None:
+        if not self.thinking_prompt_paths:
+            return None
+        return secrets.choice(self.thinking_prompt_paths)
+
+    def _ensure_ack_audio(self, path: Path, text: str) -> None:
+        if path.is_file():
+            return
+        if not text:
+            raise FileNotFoundError(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        audio_bytes = self._time_call("wake_ack_tts", self.tts.synthesize, text)
+        path.write_bytes(audio_bytes)
+
+    def _ensure_prompt_audio(self, path: Path) -> None:
+        if path.is_file():
+            return
+        index = self.thinking_prompt_paths.index(path)
+        prompt_text = self.thinking_prompt_texts[index]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        audio_bytes = self._time_call("think_prompt_tts", self.tts.synthesize, prompt_text)
+        path.write_bytes(audio_bytes)
+
     def say(self, text: str, prefix: str) -> None:
-        audio_bytes = self.tts.synthesize(text)
+        audio_bytes = self._time_call(f"{prefix}_tts", self.tts.synthesize, text)
         audio_path = self.work_dir / f"{prefix}.wav"
         audio_path.write_bytes(audio_bytes)
-        self.player.play_file(str(audio_path))
+        self._time_call(f"{prefix}_play", self.player.play_file, str(audio_path))
 
     def _record_wake_candidate(self, path: Path) -> None:
         if self.listen_mode == "fixed_window":
-            self.capture.record_for_duration(str(path), self.listen_window_seconds)
+            self._time_call("wake_record", self.capture.record_for_duration, str(path), self.listen_window_seconds)
             return
 
-        self.capture.record_next_utterance(
+        self._time_call(
+            "wake_record",
+            self.capture.record_next_utterance,
             str(path),
             max_seconds=self.wake_max_seconds,
             min_seconds=self.wake_min_seconds,
@@ -214,7 +327,9 @@ class VoicePetStateMachine:
         )
 
     def _record_user_utterance(self, path: Path, start_timeout_seconds: float | None = None) -> None:
-        self.capture.record_next_utterance(
+        self._time_call(
+            "user_record",
+            self.capture.record_next_utterance,
             str(path),
             max_seconds=self.utterance_max_seconds,
             min_seconds=self.utterance_min_seconds,
@@ -230,6 +345,14 @@ class VoicePetStateMachine:
             silence_seconds=self.silence_seconds,
         )
 
+    def _time_call(self, label: str, func, *args, **kwargs):
+        started_at = time.monotonic()
+        try:
+            return func(*args, **kwargs)
+        finally:
+            elapsed_ms = (time.monotonic() - started_at) * 1000
+            print(f"[timing] {label}={elapsed_ms:.0f}ms")
+
 
 _EMOJI = re.compile(r"[\U00010000-\U0010ffff]")
 _MARKDOWN_NOISE = re.compile(r"[*_`>#~\[\]]+")
@@ -243,8 +366,6 @@ def _format_spoken_reply(text: str, max_chars: int, first_sentence: bool) -> str
     spoken = _clean_spoken_text(text)
     if first_sentence:
         spoken = _pick_first_useful_sentence(spoken)
-    if max_chars > 0 and len(spoken) > max_chars:
-        spoken = spoken[:max_chars].rstrip(_TRIM_CHARS)
     return spoken.strip(_TRIM_CHARS + " ")
 
 

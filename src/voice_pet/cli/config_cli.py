@@ -20,6 +20,7 @@ MODEL_FIELDS = {
     "language": "mimo.language",
     "tts_voice": "mimo.tts_voice",
     "tts_format": "mimo.tts_format",
+    "tts_style_prompt": "mimo.tts_style_prompt",
 }
 
 
@@ -53,6 +54,10 @@ AUDIO_FIELDS = {
 WAKEWORD_FIELDS = {
     "ack_text": "wakeword.ack_text",
     "ack_audio_path": "wakeword.ack_audio_path",
+    "ack_texts": "wakeword.ack_texts",
+    "ack_audio_paths": "wakeword.ack_audio_paths",
+    "thinking_prompt_delay_seconds": "wakeword.thinking_prompt_delay_seconds",
+    "thinking_prompt_texts": "wakeword.thinking_prompt_texts",
     "max_extra_chars": "wakeword.max_extra_chars",
     "session_timeout_seconds": "wakeword.session_timeout_seconds",
 }
@@ -108,6 +113,7 @@ def main() -> None:
     set_parser.add_argument("--language", dest="language", help="ASR language, for example: zh")
     set_parser.add_argument("--tts-voice", dest="tts_voice", help="TTS voice name")
     set_parser.add_argument("--tts-format", dest="tts_format", help="TTS audio format, for example: wav")
+    set_parser.add_argument("--tts-style-prompt", dest="tts_style_prompt", help="TTS style prompt, for example: cute, youthful, natural Chinese delivery")
     set_parser.add_argument("--record-device", dest="record_device", help="ALSA capture device passed to arecord -D")
     set_parser.add_argument("--voice-start-threshold", dest="voice_start_threshold", type=int, help="RMS threshold to start recording")
     set_parser.add_argument("--silence-threshold", dest="silence_threshold", type=int, help="RMS threshold treated as silence")
@@ -120,6 +126,30 @@ def main() -> None:
         "--ack-audio-path",
         dest="ack_audio_path",
         help="prebuilt wake acknowledgement audio file; falls back to ack text TTS if missing",
+    )
+    set_parser.add_argument(
+        "--ack-text-variant",
+        dest="ack_texts",
+        action="append",
+        help="append a wake acknowledgement text variant; repeat this flag to add multiple variants",
+    )
+    set_parser.add_argument(
+        "--ack-audio-variant",
+        dest="ack_audio_paths",
+        action="append",
+        help="append a wake acknowledgement audio path variant; repeat this flag to add multiple variants",
+    )
+    set_parser.add_argument(
+        "--thinking-prompt-delay",
+        dest="thinking_prompt_delay_seconds",
+        type=float,
+        help="seconds to wait before playing a random prebuilt thinking prompt while the agent is still replying",
+    )
+    set_parser.add_argument(
+        "--thinking-prompt-text",
+        dest="thinking_prompt_texts",
+        action="append",
+        help="append a prebuilt thinking prompt text; repeat this flag to add multiple prompts",
     )
     set_parser.add_argument(
         "--wake-max-extra-chars",

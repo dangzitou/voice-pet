@@ -41,7 +41,15 @@ def main() -> None:
     work_dir.mkdir(parents=True, exist_ok=True)
     timeout = int(runtime.get("request_timeout_seconds", 120))
 
-    tts = MimoTTS(api_key, mimo["api_base"], mimo["tts_model"], mimo.get("tts_voice", "mimo_default"), mimo.get("tts_format", "wav"), timeout)
+    tts = MimoTTS(
+        api_key,
+        mimo["api_base"],
+        mimo["tts_model"],
+        mimo.get("tts_voice", "mimo_default"),
+        mimo.get("tts_format", "wav"),
+        timeout,
+        mimo.get("tts_style_prompt", ""),
+    )
     asr = MimoASR(api_key, mimo["api_base"], mimo["asr_model"], mimo.get("language", "zh"), timeout)
     brain_kind = str(runtime.get("brain", "picoclaw")).strip().lower()
     if brain_kind == "picoclaw":
@@ -146,6 +154,7 @@ def run_offline_mock(wake_text: str, user_text: str) -> None:
                 "language": "zh",
                 "tts_voice": "offline",
                 "tts_format": "wav",
+                "tts_style_prompt": "",
             },
             "audio": {
                 "sample_rate": 16000,

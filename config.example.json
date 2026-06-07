@@ -7,7 +7,8 @@
     "llm_model": "mimo-v2.5",
     "language": "zh",
     "tts_voice": "mimo_default",
-    "tts_format": "wav"
+    "tts_format": "wav",
+    "tts_style_prompt": "请用少女感、可爱、年轻一点的中文语气来读，声音自然，像亲近主人的桌宠，语速轻快一点，但不要夸张做作。"
   },
   "audio": {
     "sample_rate": 16000,
@@ -34,7 +35,33 @@
     "cooldown_seconds": 3.0,
     "session_timeout_seconds": 60.0,
     "ack_text": "主人，咋啦",
-    "ack_audio_path": ""
+    "ack_audio_path": "",
+    "ack_texts": [
+      "主人，咋啦",
+      "主人，我在",
+      "主人，叫我呀",
+      "主人，我来啦",
+      "主人，我听着呢",
+      "主人，什么事",
+      "主人，我在这儿",
+      "主人，你说",
+      "主人，喊我吗",
+      "主人，我来了"
+    ],
+    "ack_audio_paths": [],
+    "thinking_prompt_delay_seconds": 5.0,
+    "thinking_prompt_texts": [
+      "主人，我正在想，马上就好。",
+      "主人，稍等一下，我还在组织回复。",
+      "主人，我已经收到，正在整理答案。",
+      "主人，别急，我马上回答你。",
+      "主人，我在查一查，马上回你。",
+      "主人，我还在想这句话怎么说更合适。",
+      "主人，给我一点点时间，我快好了。",
+      "主人，我正在处理，先等我一下。",
+      "主人，我马上就回答，不会让你久等。",
+      "主人，我还在思考，再等我一小会儿。"
+    ]
   },
   "runtime": {
     "work_dir": "~/.picoclaw/voice-pet/runtime",
