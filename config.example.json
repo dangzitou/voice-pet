@@ -6,7 +6,7 @@
     "tts_model": "mimo-v2.5-tts",
     "llm_model": "mimo-v2.5",
     "language": "zh",
-    "tts_voice": "default_zh",
+    "tts_voice": "mimo_default",
     "tts_format": "wav"
   },
   "audio": {
@@ -27,6 +27,10 @@
   "runtime": {
     "work_dir": "~/.picoclaw/voice-pet/runtime",
     "poll_interval_seconds": 0.2,
-    "request_timeout_seconds": 120
+    "request_timeout_seconds": 120,
+    "brain": "direct_llm",
+    "picoclaw_ws_url": "ws://127.0.0.1:18790/pico/ws",
+    "picoclaw_token": "",
+    "picoclaw_session_id": "voice-pet"
   }
 }
