@@ -6,9 +6,9 @@ import re
 
 _PUNCTUATION = re.compile(r"[\s,，.。!！?？;；:：'\"“”‘’()\[\]{}<>《》、\-_/\\|]+")
 _COMMON_WAKE_EQUIVALENTS = {
-    "小爱": ["小艾", "晓爱", "晓艾", "小哎", "晓哎", "小碍", "小唉", "你好你好", "你号你号"],
-    "小艾": ["小爱", "晓爱", "晓艾", "小哎", "晓哎", "小碍", "小唉", "你好你好", "你号你号"],
-    "xiaoai": ["小爱", "小艾", "晓爱", "晓艾", "小哎", "晓哎", "你好你好", "你号你号"],
+    "小爱": ["小艾", "晓爱", "晓艾", "小哎", "晓哎", "小碍", "小唉", "小安", "你好你好", "你号你号"],
+    "小艾": ["小爱", "晓爱", "晓艾", "小哎", "晓哎", "小碍", "小唉", "小安", "你好你好", "你号你号"],
+    "xiaoai": ["小爱", "小艾", "晓爱", "晓艾", "小哎", "晓哎", "小安", "你好你好", "你号你号"],
 }
 
 
@@ -36,6 +36,18 @@ class WakewordDetector:
                 cleaned = normalized.replace(alias, "")
                 return WakewordResult(matched=True, alias=alias, cleaned_text=cleaned)
         return WakewordResult(matched=False, cleaned_text=normalized)
+
+    def detect_boundary(self, previous: str, current: str) -> WakewordResult:
+        previous_normalized = _compact(previous)
+        current_normalized = _compact(current)
+        for alias in self.aliases:
+            for split_at in range(1, len(alias)):
+                previous_part = alias[:split_at]
+                current_part = alias[split_at:]
+                if previous_normalized.endswith(previous_part) and current_normalized.startswith(current_part):
+                    cleaned = (previous_normalized + current_normalized).replace(alias, "")
+                    return WakewordResult(matched=True, alias=alias, cleaned_text=cleaned)
+        return WakewordResult(matched=False, cleaned_text=previous_normalized + current_normalized)
 
     def detect_prefix(self, text: str) -> WakewordResult:
         normalized = _compact(text)

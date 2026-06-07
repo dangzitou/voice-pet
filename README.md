@@ -229,7 +229,11 @@ voice-pet config set \
   --record-device "plughw:CARD=Microphone,DEV=0" \
   --voice-start-threshold 850 \
   --silence-threshold 720 \
-  --silence-seconds 0.8
+  --silence-seconds 0.8 \
+  --wake-silence-seconds 1.0 \
+  --utterance-silence-seconds 1.2 \
+  --wake-max-seconds 0 \
+  --utterance-max-seconds 0
 ```
 
 如果使用普通 ALSA 默认输出：
@@ -344,6 +348,7 @@ voice-pet start --no-gateway
 | `voice-pet logs --target gateway -f` | 实时查看 PicoClaw gateway 日志 |
 | `voice-pet config show` | 查看当前模型、音频和 runtime 配置 |
 | `voice-pet config set --playback-cooldown 0.5` | 设置每次播放后再开麦前的等待时间 |
+| `voice-pet config set --wake-silence-seconds 1.0 --utterance-silence-seconds 1.2 --wake-max-seconds 0 --utterance-max-seconds 0` | 持续收完整段人声，`max=0` 表示不按固定时长切段 |
 | `voice-pet demo --text "主人，咋啦"` | 跑一次 MiMo TTS/ASR 调试 demo |
 | `voice-pet mock --offline --wake-text "小爱小爱" --user-text "小爱今天厦门天气咋样"` | 跑离线 mock 闭环测试 |
 
@@ -400,7 +405,7 @@ journalctl --user -u voice-pet -f
 ## 运行流程
 
 1. 本地持续读取麦克风 PCM
-2. 检测到一段完整语音后写入候选唤醒音频
+2. 长期开启麦克风原始 PCM 流，超过人声阈值后开始缓存，直到持续静音才结束这一整段语音
 3. 使用 MiMo ASR 转写候选音频
 4. 匹配唤醒词别名
 5. 如果匹配“小爱”，立即播报 `主人，咋啦`

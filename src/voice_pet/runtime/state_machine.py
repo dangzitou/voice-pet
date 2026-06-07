@@ -107,11 +107,16 @@ class VoicePetStateMachine:
         self.voice_start_threshold = int(audio.get("voice_start_threshold", audio.get("silence_threshold", 500)))
         self.silence_threshold = int(audio.get("silence_threshold", 500))
         self.silence_seconds = float(audio.get("silence_seconds", 1.2))
+        self.wake_silence_seconds = float(audio.get("wake_silence_seconds", self.silence_seconds))
+        self.utterance_silence_seconds = float(
+            audio.get("utterance_silence_seconds", max(self.silence_seconds, 1.0))
+        )
         self.playback_cooldown_seconds = max(0.0, float(audio.get("playback_cooldown_seconds", 0.5)))
         self.poll_interval_seconds = float(runtime.get("poll_interval_seconds", 0.2))
         self.spoken_reply_max_chars = int(runtime.get("spoken_reply_max_chars", 36))
         self.spoken_reply_first_sentence = bool(runtime.get("spoken_reply_first_sentence", True))
         self._last_wake_at = 0.0
+        self._previous_idle_text = ""
 
     def run(self) -> None:
         print(f"[voice-pet] started, waiting for wakeword... mode={self.listen_mode}")
@@ -126,6 +131,7 @@ class VoicePetStateMachine:
                     print(f"[voice-pet] loop error: {exc}")
                     time.sleep(1.0)
         finally:
+            self._close_capture()
             self.gateway.stop()
 
     def run_once(self) -> None:
@@ -136,6 +142,7 @@ class VoicePetStateMachine:
 
         idle_path = self.work_dir / "wake-candidate.wav"
         self._record_wake_candidate(idle_path)
+        self._reset_capture_stream()
         heard = self._time_call("idle_asr", self.asr.transcribe_file, str(idle_path))
         heard = heard.strip()
         if not heard:
@@ -144,12 +151,19 @@ class VoicePetStateMachine:
 
         print(f"[idle] asr={heard}")
         wake = self.detector.detect(heard)
+        if not wake.matched and self._previous_idle_text:
+            boundary_wake = self.detector.detect_boundary(self._previous_idle_text, heard)
+            if boundary_wake.matched:
+                print(f"[idle] boundary wake match previous={self._previous_idle_text} current={heard}")
+                wake = boundary_wake
+        self._previous_idle_text = "" if wake.matched else heard
         if not wake.matched:
             return
         if self.wake_max_extra_chars >= 0 and len(wake.cleaned_text) > self.wake_max_extra_chars:
             print(f"[idle] ignored wake match with extra text={wake.cleaned_text}")
             return
 
+        self._previous_idle_text = ""
         self._last_wake_at = time.monotonic()
         print(f"[wake] matched alias={wake.alias}")
         self.play_ack()
@@ -198,6 +212,7 @@ class VoicePetStateMachine:
                 print("[session] no user speech before timeout, waiting for wakeword")
                 return
 
+            self._reset_capture_stream()
             user_text = self._time_call("session_asr", self.asr.transcribe_file, str(user_audio)).strip()
             if not user_text:
                 print("[session] empty user text")
@@ -320,9 +335,21 @@ class VoicePetStateMachine:
         self._play_file_sync(prefix, audio_path)
 
     def _play_file_sync(self, label: str, path: Path) -> None:
+        self._reset_capture_stream()
         self._time_call(f"{label}_play", self.player.play_file, str(path))
         if self.playback_cooldown_seconds > 0:
             self._time_call(f"{label}_playback_cooldown", time.sleep, self.playback_cooldown_seconds)
+        self._reset_capture_stream()
+
+    def _reset_capture_stream(self) -> None:
+        reset_stream = getattr(self.capture, "reset_stream", None)
+        if callable(reset_stream):
+            reset_stream()
+
+    def _close_capture(self) -> None:
+        close = getattr(self.capture, "close", None)
+        if callable(close):
+            close()
 
     def _record_wake_candidate(self, path: Path) -> None:
         if self.listen_mode == "fixed_window":
@@ -339,7 +366,7 @@ class VoicePetStateMachine:
             pre_roll_seconds=self.pre_roll_seconds,
             start_threshold=self.voice_start_threshold,
             silence_threshold=self.silence_threshold,
-            silence_seconds=self.silence_seconds,
+            silence_seconds=self.wake_silence_seconds,
         )
 
     def _record_user_utterance(self, path: Path, start_timeout_seconds: float | None = None) -> None:
@@ -358,7 +385,7 @@ class VoicePetStateMachine:
             ),
             start_threshold=self.voice_start_threshold,
             silence_threshold=self.silence_threshold,
-            silence_seconds=self.silence_seconds,
+            silence_seconds=self.utterance_silence_seconds,
         )
 
     def _time_call(self, label: str, func, *args, **kwargs):

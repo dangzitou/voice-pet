@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections import deque
+from queue import Empty, Full, Queue
 import subprocess
+from threading import Event, Lock, Thread
 import time
 import wave
 from pathlib import Path
@@ -21,11 +23,17 @@ class AudioCapture:
         self.device = device
         self.silence_threshold = silence_threshold
         self.silence_seconds = silence_seconds
+        self._stream_proc: subprocess.Popen[bytes] | None = None
+        self._stream_thread: Thread | None = None
+        self._stream_stop: Event | None = None
+        self._stream_chunk_bytes = 0
+        self._stream_lock = Lock()
+        self._chunks: Queue[tuple[float, bytes]] = Queue(maxsize=300)
 
     def record_next_utterance(
         self,
         path: str,
-        max_seconds: float,
+        max_seconds: float | None = None,
         min_seconds: float = 0.5,
         chunk_ms: int = 100,
         pre_roll_seconds: float = 0.3,
@@ -43,81 +51,178 @@ class AudioCapture:
         start_threshold = self.silence_threshold if start_threshold is None else start_threshold
         silence_threshold = self.silence_threshold if silence_threshold is None else silence_threshold
         silence_seconds = self.silence_seconds if silence_seconds is None else silence_seconds
+        max_seconds = None if max_seconds is None or max_seconds <= 0 else max_seconds
         pre_roll_chunks = max(0, int(pre_roll_seconds * 1000 / max(20, chunk_ms)))
         pre_roll: deque[bytes] = deque(maxlen=pre_roll_chunks)
-
-        cmd = [
-            "arecord",
-            "-q",
-            "-f",
-            "S16_LE",
-            "-r",
-            str(self.sample_rate),
-            "-c",
-            str(self.channels),
-            "-t",
-            "raw",
-        ]
-        if self.device:
-            cmd[1:1] = ["-D", self.device]
-
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
         frames: list[bytes] = []
         waiting_started_at = time.monotonic()
         speech_started_at = 0.0
         silence_started_at: float | None = None
-        try:
-            if proc.stdout is None:
-                raise RuntimeError("arecord stdout is unavailable")
+        self._ensure_stream(chunk_bytes)
+        self._drain_chunks()
 
-            while True:
-                chunk = proc.stdout.read(chunk_bytes)
-                if not chunk:
-                    break
-
-                rms = _read_pcm_rms(chunk)
-                now = time.monotonic()
-                if not speech_started_at:
-                    if rms >= start_threshold:
-                        speech_started_at = now
-                        frames.extend(pre_roll)
-                        pre_roll.clear()
-                        frames.append(chunk)
-                    else:
-                        if pre_roll_chunks:
-                            pre_roll.append(chunk)
-                        if (
-                            start_timeout_seconds is not None
-                            and now - waiting_started_at >= start_timeout_seconds
-                        ):
-                            raise TimeoutError("no speech detected before timeout")
-                    continue
-
-                frames.append(chunk)
-                elapsed = now - speech_started_at
-                if rms >= silence_threshold:
-                    silence_started_at = None
-                elif elapsed >= min_seconds:
-                    if silence_started_at is None:
-                        silence_started_at = now
-                    elif now - silence_started_at >= silence_seconds:
-                        break
-
-                if elapsed >= max_seconds:
-                    break
-        finally:
-            proc.terminate()
+        while True:
             try:
-                proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=2)
+                read_at, chunk = self._read_chunk(chunk_bytes, timeout=0.2)
+            except TimeoutError:
+                if (
+                    not speech_started_at
+                    and start_timeout_seconds is not None
+                    and time.monotonic() - waiting_started_at >= start_timeout_seconds
+                ):
+                    raise TimeoutError("no speech detected before timeout")
+                continue
+
+            rms = _read_pcm_rms(chunk)
+            now = read_at
+            if not speech_started_at:
+                if rms >= start_threshold:
+                    speech_started_at = now
+                    frames.extend(pre_roll)
+                    pre_roll.clear()
+                    frames.append(chunk)
+                else:
+                    if pre_roll_chunks:
+                        pre_roll.append(chunk)
+                    if (
+                        start_timeout_seconds is not None
+                        and now - waiting_started_at >= start_timeout_seconds
+                    ):
+                        raise TimeoutError("no speech detected before timeout")
+                continue
+
+            frames.append(chunk)
+            elapsed = now - speech_started_at
+            if rms >= silence_threshold:
+                silence_started_at = None
+            elif elapsed >= min_seconds:
+                if silence_started_at is None:
+                    silence_started_at = now
+                elif now - silence_started_at >= silence_seconds:
+                    break
+
+            if max_seconds is not None and elapsed >= max_seconds:
+                print(f"[audio] safety max_seconds reached: {max_seconds:.1f}s")
+                break
 
         if not frames:
             raise RuntimeError("no utterance captured")
 
         _write_wav(output, frames, self.sample_rate, self.channels)
         return str(output)
+
+    def reset_stream(self) -> None:
+        self._drain_chunks()
+
+    def close(self) -> None:
+        with self._stream_lock:
+            self._close_locked()
+        self._drain_chunks()
+
+    def _ensure_stream(self, chunk_bytes: int) -> None:
+        with self._stream_lock:
+            if (
+                self._stream_proc is not None
+                and self._stream_proc.poll() is None
+                and self._stream_chunk_bytes == chunk_bytes
+            ):
+                return
+            self._close_locked()
+
+            cmd = [
+                "arecord",
+                "-q",
+                "-f",
+                "S16_LE",
+                "-r",
+                str(self.sample_rate),
+                "-c",
+                str(self.channels),
+                "-t",
+                "raw",
+            ]
+            if self.device:
+                cmd[1:1] = ["-D", self.device]
+
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            if proc.stdout is None:
+                proc.terminate()
+                raise RuntimeError("arecord stdout is unavailable")
+
+            stop_event = Event()
+            thread = Thread(
+                target=self._read_stream,
+                args=(proc, stop_event, chunk_bytes),
+                daemon=True,
+            )
+            self._stream_proc = proc
+            self._stream_stop = stop_event
+            self._stream_thread = thread
+            self._stream_chunk_bytes = chunk_bytes
+            thread.start()
+
+    def _read_chunk(self, chunk_bytes: int, timeout: float) -> tuple[float, bytes]:
+        self._ensure_stream(chunk_bytes)
+        try:
+            return self._chunks.get(timeout=timeout)
+        except Empty:
+            proc = self._stream_proc
+            if proc is None or proc.poll() is not None:
+                self._ensure_stream(chunk_bytes)
+            raise TimeoutError("no audio chunk available")
+
+    def _read_stream(self, proc: subprocess.Popen[bytes], stop_event: Event, chunk_bytes: int) -> None:
+        stdout = proc.stdout
+        if stdout is None:
+            return
+        while not stop_event.is_set():
+            chunk = stdout.read(chunk_bytes)
+            if not chunk:
+                break
+            self._put_chunk((time.monotonic(), chunk))
+
+    def _put_chunk(self, chunk: tuple[float, bytes]) -> None:
+        try:
+            self._chunks.put_nowait(chunk)
+            return
+        except Full:
+            pass
+        try:
+            self._chunks.get_nowait()
+        except Empty:
+            pass
+        try:
+            self._chunks.put_nowait(chunk)
+        except Full:
+            pass
+
+    def _drain_chunks(self) -> None:
+        while True:
+            try:
+                self._chunks.get_nowait()
+            except Empty:
+                return
+
+    def _close_locked(self) -> None:
+        proc = self._stream_proc
+        thread = self._stream_thread
+        stop_event = self._stream_stop
+        self._stream_proc = None
+        self._stream_thread = None
+        self._stream_stop = None
+        self._stream_chunk_bytes = 0
+        if stop_event is not None:
+            stop_event.set()
+        if proc is None:
+            return
+        proc.terminate()
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2)
+        if thread is not None:
+            thread.join(timeout=1)
 
     def record_for_duration(self, path: str, seconds: float) -> str:
         output = Path(path)

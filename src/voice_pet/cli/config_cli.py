@@ -45,7 +45,10 @@ AUDIO_FIELDS = {
     "voice_start_threshold": "audio.voice_start_threshold",
     "silence_threshold": "audio.silence_threshold",
     "silence_seconds": "audio.silence_seconds",
+    "wake_silence_seconds": "audio.wake_silence_seconds",
+    "utterance_silence_seconds": "audio.utterance_silence_seconds",
     "wake_max_seconds": "audio.wake_max_seconds",
+    "utterance_max_seconds": "audio.utterance_max_seconds",
     "playback_command": "audio.playback_command",
     "playback_device": "audio.playback_device",
     "playback_cooldown_seconds": "audio.playback_cooldown_seconds",
@@ -119,7 +122,20 @@ def main() -> None:
     set_parser.add_argument("--voice-start-threshold", dest="voice_start_threshold", type=int, help="RMS threshold to start recording")
     set_parser.add_argument("--silence-threshold", dest="silence_threshold", type=int, help="RMS threshold treated as silence")
     set_parser.add_argument("--silence-seconds", dest="silence_seconds", type=float, help="seconds of silence to end recording")
+    set_parser.add_argument(
+        "--wake-silence-seconds",
+        dest="wake_silence_seconds",
+        type=float,
+        help="seconds of silence to end a wakeword candidate",
+    )
+    set_parser.add_argument(
+        "--utterance-silence-seconds",
+        dest="utterance_silence_seconds",
+        type=float,
+        help="seconds of silence to end a user utterance after wake",
+    )
     set_parser.add_argument("--wake-max-seconds", dest="wake_max_seconds", type=float, help="maximum seconds for a wake candidate")
+    set_parser.add_argument("--utterance-max-seconds", dest="utterance_max_seconds", type=float, help="maximum seconds for a user utterance after wake")
     set_parser.add_argument("--playback-command", dest="playback_command", help="audio playback command")
     set_parser.add_argument("--playback-device", dest="playback_device", help="ALSA playback device passed to aplay -D")
     set_parser.add_argument(

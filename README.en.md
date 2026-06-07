@@ -229,7 +229,11 @@ voice-pet config set \
   --record-device "plughw:CARD=Microphone,DEV=0" \
   --voice-start-threshold 850 \
   --silence-threshold 720 \
-  --silence-seconds 0.8
+  --silence-seconds 0.8 \
+  --wake-silence-seconds 1.0 \
+  --utterance-silence-seconds 1.2 \
+  --wake-max-seconds 0 \
+  --utterance-max-seconds 0
 ```
 
 For normal ALSA default output:
@@ -344,6 +348,7 @@ Common commands:
 | `voice-pet logs --target gateway -f` | Follow PicoClaw gateway logs |
 | `voice-pet config show` | Show current model, audio, and runtime configuration |
 | `voice-pet config set --playback-cooldown 0.5` | Set the wait time after playback before recording again |
+| `voice-pet config set --wake-silence-seconds 1.0 --utterance-silence-seconds 1.2 --wake-max-seconds 0 --utterance-max-seconds 0` | Capture each full speech segment continuously; `max=0` disables fixed-duration cuts |
 | `voice-pet demo --text "主人，咋啦"` | Run a MiMo TTS/ASR debug demo |
 | `voice-pet mock --offline --wake-text "小爱小爱" --user-text "小爱今天厦门天气咋样"` | Run the offline mock end-to-end test |
 
@@ -400,7 +405,7 @@ journalctl --user -u voice-pet -f
 ## Runtime Flow
 
 1. Continuously read microphone PCM locally
-2. Capture a wake candidate after a full speech segment is detected
+2. Keep one raw microphone PCM stream open; after audio exceeds the speech threshold, buffer continuously until sustained silence ends the full speech segment
 3. Transcribe the candidate audio with MiMo ASR
 4. Match wakeword aliases
 5. If the wakeword matches, immediately acknowledge with `主人，咋啦`
