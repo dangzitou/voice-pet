@@ -38,19 +38,30 @@ Not implemented yet:
 
 ```text
 src/voice_pet/
-├── main.py                # CLI entrypoint
-├── config_cli.py          # configuration CLI
-├── state_machine.py       # runtime loop
-├── picoclaw_gateway.py    # optional PicoClaw gateway process management
-├── audio_capture.py       # recording and silence cut-off
-├── wakeword.py            # wakeword alias matching
-├── action_router.py       # optional local action routing, disabled by default
-├── mock_mvp.py            # mock end-to-end test using TTS-generated input
-├── asr/mimo_asr.py        # MiMo ASR client
-├── tts/mimo_tts.py        # MiMo TTS client
-├── brain/picoclaw.py      # PicoClaw gateway bridge adapter
-└── brain/direct_llm.py    # debugging fallback, not the default reply core
-pico_bridge_once.js        # Node WebSocket helper for PicoClaw bridge
+├── main.py                    # runtime entrypoint
+├── config.py                  # config loading and env overrides
+├── cli/                       # user-facing command line entrypoints
+│   ├── ctl.py                 # voice-pet start/status/logs/stop
+│   └── config_cli.py          # model and audio configuration CLI
+├── runtime/                   # wake/session state machine
+│   ├── state_machine.py       # idle/wake/session/think/speak flow
+│   ├── wakeword.py            # wakeword aliases and ASR-tolerant matching
+│   ├── picoclaw_gateway.py    # optional PicoClaw gateway process management
+│   └── actions.py             # optional local action routing, disabled by default
+├── audio/                     # local audio input/output
+│   ├── capture.py             # arecord capture and silence cut-off
+│   └── player.py              # aplay/BlueALSA playback
+├── mimo/endpoint.py           # MiMo OpenAI-compatible endpoint helper
+├── asr/mimo_asr.py            # MiMo ASR client
+├── tts/mimo_tts.py            # MiMo TTS client
+├── brain/                     # reply core adapters
+│   ├── picoclaw.py            # PicoClaw gateway bridge adapter
+│   └── direct_llm.py          # debugging fallback, not the default reply core
+└── tools/                     # local debug tools and mocks
+    ├── mock_mvp.py
+    └── demo_loop.py
+voice-pet                      # user command
+pico_bridge_once.js            # Node WebSocket helper for PicoClaw bridge
 ```
 
 ## Requirements
@@ -87,9 +98,9 @@ You can also place the key in `config.json`. If both are configured, environment
 You can also use the configuration CLI to create, inspect, and update voice model settings:
 
 ```bash
-PYTHONPATH=src python3 -m voice_pet.config_cli init --config ./config.json
-PYTHONPATH=src python3 -m voice_pet.config_cli show --config ./config.json
-PYTHONPATH=src python3 -m voice_pet.config_cli set --config ./config.json \
+voice-pet config init --config ./config.json
+voice-pet config show --config ./config.json
+voice-pet config set --config ./config.json \
   --base-url https://token-plan-cn.xiaomimimo.com/v1 \
   --api-key "<your-mimo-token>" \
   --model-name mimo-v2.5 \
@@ -108,7 +119,7 @@ Supported voice model fields are: `--api-key`, `--clear-api-key`, `--api-base` /
 To pin playback to a BlueALSA Bluetooth speaker, for example BT501:
 
 ```bash
-PYTHONPATH=src python3 -m voice_pet.config_cli set --config ./config.json \
+voice-pet config set --config ./config.json \
   --playback-command aplay \
   --playback-device "bluealsa:DEV=D6:BF:DF:4A:EF:E2,PROFILE=a2dp,VOL=100+"
 ```
@@ -116,10 +127,10 @@ PYTHONPATH=src python3 -m voice_pet.config_cli set --config ./config.json \
 To prebuild the `主人，咋啦` wake acknowledgement, synthesize it once and then save the path in config:
 
 ```bash
-PYTHONPATH=src python3 -m voice_pet.demo_loop --config ./config.json \
+voice-pet demo --config ./config.json \
   --text "主人，咋啦" \
   --output ~/.picoclaw/voice-pet/runtime/ack.wav
-PYTHONPATH=src python3 -m voice_pet.config_cli set --config ./config.json \
+voice-pet config set --config ./config.json \
   --ack-text "主人，咋啦" \
   --ack-audio-path ~/.picoclaw/voice-pet/runtime/ack.wav
 ```
@@ -129,7 +140,7 @@ When `wakeword.ack_audio_path` is configured, wake acknowledgement directly play
 To let `voice-pet` start PicoClaw gateway:
 
 ```bash
-PYTHONPATH=src python3 -m voice_pet.config_cli set --config ./config.json \
+voice-pet config set --config ./config.json \
   --manage-picoclaw-gateway \
   --picoclaw-gateway-command picoclaw \
   --picoclaw-gateway-args "gateway" \
@@ -160,15 +171,30 @@ Start the full local system:
 
 ```bash
 cd /home/zitou/my-project/voice-pet
-./voice-petctl start
+voice-pet start
 ```
 
 Check status, follow logs, and stop:
 
+| Command | Purpose |
+| --- | --- |
+| `voice-pet start` | Start PicoClaw gateway and voice-pet in the background |
+| `voice-pet stop` | Stop voice-pet and PicoClaw gateway |
+| `voice-pet restart` | Restart the full voice runtime |
+| `voice-pet status` | Show gateway/voice-pet process and health status |
+| `voice-pet logs -f` | Follow voice-pet logs |
+| `voice-pet logs --target gateway -f` | Follow PicoClaw gateway logs |
+| `voice-pet config show` | Show current model, audio, and runtime configuration |
+| `voice-pet config set --tts-voice 冰糖` | Update config, example switches TTS voice |
+| `voice-pet mock --offline --wake-text "小爱小爱" --user-text "今天厦门天气咋样"` | Run the offline mock end-to-end test |
+| `voice-pet demo --text "主人，咋啦"` | Run a MiMo TTS/ASR debug demo |
+
+Most common status, log, and stop commands:
+
 ```bash
-./voice-petctl status
-./voice-petctl logs -f
-./voice-petctl stop
+voice-pet status
+voice-pet logs -f
+voice-pet stop
 ```
 
 `start` launches both the PicoClaw gateway and voice-pet in the background, loads `~/.picoclaw/voice-pet/voice-pet.env`, and removes local proxy environment variables so localhost gateway traffic is not routed through a proxy. Logs are written to:
@@ -187,21 +213,19 @@ PYTHONPATH=src python3 -m voice_pet.main --config ~/.picoclaw/voice-pet/config.j
 Run the TTS / ASR demo:
 
 ```bash
-cd ~/.picoclaw/voice-pet
-PYTHONPATH=src python3 -m voice_pet.demo_loop --config ~/.picoclaw/voice-pet/config.json --text "主人，咋啦"
+voice-pet demo --text "主人，咋啦"
 ```
 
 Run the mock end-to-end test:
 
 ```bash
-cd ~/.picoclaw/voice-pet
-PYTHONPATH=src python3 -m voice_pet.mock_mvp --config ~/.picoclaw/voice-pet/config.json --wake-text "小爱小爱" --user-text "你好，请只回复：ok"
+voice-pet mock --wake-text "小爱小爱" --user-text "你好，请只回复：ok"
 ```
 
 Run the offline mock without MiMo/PicoClaw credentials:
 
 ```bash
-PYTHONPATH=src python3 -m voice_pet.mock_mvp --offline --wake-text "小爱小爱" --user-text "今天天气怎么样"
+voice-pet mock --offline --wake-text "小爱小爱" --user-text "今天天气怎么样"
 ```
 
 ## Runtime Flow

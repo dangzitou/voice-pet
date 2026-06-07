@@ -6,6 +6,6 @@ __pycache__/
 *.ogg
 .env
 config.json
-runtime/
+/runtime/
 .venv/
 node_modules/

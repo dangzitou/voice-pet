@@ -4,14 +4,14 @@ import re
 import time
 from pathlib import Path
 
-from .action_router import build_default_router
-from .audio_capture import AudioCapture
-from .asr.mimo_asr import MimoASR
-from .brain.direct_llm import DirectLLMAdapter
-from .brain.picoclaw import PicoBridgeConfig, PicoClawAdapter
-from .player import AudioPlayer
+from ..audio.capture import AudioCapture
+from ..audio.player import AudioPlayer
+from ..asr.mimo_asr import MimoASR
+from ..brain.direct_llm import DirectLLMAdapter
+from ..brain.picoclaw import PicoBridgeConfig, PicoClawAdapter
+from ..tts.mimo_tts import MimoTTS
+from .actions import build_default_router
 from .picoclaw_gateway import PicoClawGatewayProcess
-from .tts.mimo_tts import MimoTTS
 from .wakeword import WakewordDetector
 
 

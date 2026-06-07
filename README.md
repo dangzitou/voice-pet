@@ -38,19 +38,30 @@ English README: [README.en.md](./README.en.md)
 
 ```text
 src/voice_pet/
-├── main.py                # CLI 入口
-├── config_cli.py          # 配置管理 CLI
-├── state_machine.py       # 运行时主循环
-├── picoclaw_gateway.py    # 可选 PicoClaw gateway 进程管理
-├── audio_capture.py       # 录音与静音截断
-├── wakeword.py            # 唤醒词别名匹配
-├── action_router.py       # 可选本地动作路由，默认关闭
-├── mock_mvp.py            # 用 TTS mock 输入的闭环测试
-├── asr/mimo_asr.py        # MiMo ASR 客户端
-├── tts/mimo_tts.py        # MiMo TTS 客户端
-├── brain/picoclaw.py      # PicoClaw gateway 桥接适配器
-└── brain/direct_llm.py    # 调试 fallback，不是默认回复核心
-pico_bridge_once.js        # Node WebSocket helper for PicoClaw bridge
+├── main.py                    # 运行时主入口
+├── config.py                  # 配置加载和环境变量覆盖
+├── cli/                       # 用户命令行入口
+│   ├── ctl.py                 # voice-pet start/status/logs/stop
+│   └── config_cli.py          # 模型和音频配置 CLI
+├── runtime/                   # 唤醒和会话状态机
+│   ├── state_machine.py       # idle/wake/session/think/speak 主流程
+│   ├── wakeword.py            # 唤醒词别名和 ASR 容错匹配
+│   ├── picoclaw_gateway.py    # 可选 PicoClaw gateway 进程管理
+│   └── actions.py             # 可选本地动作路由，默认关闭
+├── audio/                     # 本地音频输入输出
+│   ├── capture.py             # arecord 录音和静音截断
+│   └── player.py              # aplay/BlueALSA 播放
+├── mimo/endpoint.py           # MiMo OpenAI-compatible endpoint helper
+├── asr/mimo_asr.py            # MiMo ASR 客户端
+├── tts/mimo_tts.py            # MiMo TTS 客户端
+├── brain/                     # 回复核心适配
+│   ├── picoclaw.py            # PicoClaw gateway 桥接适配器
+│   └── direct_llm.py          # 调试 fallback，不是默认回复核心
+└── tools/                     # 本地调试工具和 mock
+    ├── mock_mvp.py
+    └── demo_loop.py
+voice-pet                      # 用户入口命令
+pico_bridge_once.js            # Node WebSocket helper for PicoClaw bridge
 ```
 
 ## 环境要求
@@ -87,9 +98,9 @@ export PICOCLAW_TOKEN="<your-pico-token>"
 也可以用配置 CLI 创建、查看和修改语音模型配置：
 
 ```bash
-PYTHONPATH=src python3 -m voice_pet.config_cli init --config ./config.json
-PYTHONPATH=src python3 -m voice_pet.config_cli show --config ./config.json
-PYTHONPATH=src python3 -m voice_pet.config_cli set --config ./config.json \
+voice-pet config init --config ./config.json
+voice-pet config show --config ./config.json
+voice-pet config set --config ./config.json \
   --base-url https://token-plan-cn.xiaomimimo.com/v1 \
   --api-key "<your-mimo-token>" \
   --model-name mimo-v2.5 \
@@ -108,7 +119,7 @@ PYTHONPATH=src python3 -m voice_pet.config_cli set --config ./config.json \
 如果要固定输出到 BlueALSA 蓝牙音箱，例如 BT501：
 
 ```bash
-PYTHONPATH=src python3 -m voice_pet.config_cli set --config ./config.json \
+voice-pet config set --config ./config.json \
   --playback-command aplay \
   --playback-device "bluealsa:DEV=D6:BF:DF:4A:EF:E2,PROFILE=a2dp,VOL=100+"
 ```
@@ -116,10 +127,10 @@ PYTHONPATH=src python3 -m voice_pet.config_cli set --config ./config.json \
 如果要把“主人，咋啦”预制成音频，先用 TTS demo 生成一次，再把路径写入配置：
 
 ```bash
-PYTHONPATH=src python3 -m voice_pet.demo_loop --config ./config.json \
+voice-pet demo --config ./config.json \
   --text "主人，咋啦" \
   --output ~/.picoclaw/voice-pet/runtime/ack.wav
-PYTHONPATH=src python3 -m voice_pet.config_cli set --config ./config.json \
+voice-pet config set --config ./config.json \
   --ack-text "主人，咋啦" \
   --ack-audio-path ~/.picoclaw/voice-pet/runtime/ack.wav
 ```
@@ -129,7 +140,7 @@ PYTHONPATH=src python3 -m voice_pet.config_cli set --config ./config.json \
 如果希望由 `voice-pet` 启动 PicoClaw gateway：
 
 ```bash
-PYTHONPATH=src python3 -m voice_pet.config_cli set --config ./config.json \
+voice-pet config set --config ./config.json \
   --manage-picoclaw-gateway \
   --picoclaw-gateway-command picoclaw \
   --picoclaw-gateway-args "gateway" \
@@ -160,15 +171,30 @@ npm install
 
 ```bash
 cd /home/zitou/my-project/voice-pet
-./voice-petctl start
+voice-pet start
 ```
 
-查看状态、日志和停止：
+常用命令：
+
+| 命令 | 用途 |
+| --- | --- |
+| `voice-pet start` | 后台启动 PicoClaw gateway 和 voice-pet |
+| `voice-pet stop` | 停止 voice-pet 和 PicoClaw gateway |
+| `voice-pet restart` | 重启完整语音 runtime |
+| `voice-pet status` | 查看 gateway/voice-pet 进程和健康状态 |
+| `voice-pet logs -f` | 实时查看 voice-pet 日志 |
+| `voice-pet logs --target gateway -f` | 实时查看 PicoClaw gateway 日志 |
+| `voice-pet config show` | 查看当前模型、音频和 runtime 配置 |
+| `voice-pet config set --tts-voice 冰糖` | 修改配置，示例为切换 TTS 音色 |
+| `voice-pet mock --offline --wake-text "小爱小爱" --user-text "今天厦门天气咋样"` | 跑离线 mock 闭环测试 |
+| `voice-pet demo --text "主人，咋啦"` | 跑一次 MiMo TTS/ASR 调试 demo |
+
+最常用的状态、日志和停止：
 
 ```bash
-./voice-petctl status
-./voice-petctl logs -f
-./voice-petctl stop
+voice-pet status
+voice-pet logs -f
+voice-pet stop
 ```
 
 `start` 会在后台启动 PicoClaw gateway 和 voice-pet，自动加载 `~/.picoclaw/voice-pet/voice-pet.env`，并清掉本机代理环境，避免 localhost gateway 被代理干扰。日志默认写入：
@@ -187,21 +213,19 @@ PYTHONPATH=src python3 -m voice_pet.main --config ~/.picoclaw/voice-pet/config.j
 运行 TTS / ASR 演示：
 
 ```bash
-cd ~/.picoclaw/voice-pet
-PYTHONPATH=src python3 -m voice_pet.demo_loop --config ~/.picoclaw/voice-pet/config.json --text "主人，咋啦"
+voice-pet demo --text "主人，咋啦"
 ```
 
 运行 mock 闭环测试：
 
 ```bash
-cd ~/.picoclaw/voice-pet
-PYTHONPATH=src python3 -m voice_pet.mock_mvp --config ~/.picoclaw/voice-pet/config.json --wake-text "小爱小爱" --user-text "你好，请只回复：ok"
+voice-pet mock --wake-text "小爱小爱" --user-text "你好，请只回复：ok"
 ```
 
 不依赖 MiMo/PicoClaw 的离线 mock：
 
 ```bash
-PYTHONPATH=src python3 -m voice_pet.mock_mvp --offline --wake-text "小爱小爱" --user-text "今天天气怎么样"
+voice-pet mock --offline --wake-text "小爱小爱" --user-text "今天天气怎么样"
 ```
 
 ## 运行流程

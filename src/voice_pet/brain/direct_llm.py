@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ..mimo_endpoint import chat_completions_url, post_json_without_proxy
+from ..mimo.endpoint import chat_completions_url, post_json_without_proxy
 
 VOICE_REPLY_SYSTEM = (
     "你现在是一个桌面语音助手。"

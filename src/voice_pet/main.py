@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 
 from .config import load_config
-from .state_machine import VoicePetStateMachine
+from .runtime.state_machine import VoicePetStateMachine
 
 
 def main() -> None:

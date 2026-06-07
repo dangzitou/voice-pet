@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
-from ..mimo_endpoint import chat_completions_url, post_json_without_proxy
+from ..mimo.endpoint import chat_completions_url, post_json_without_proxy
 
 
 class MimoASR:
