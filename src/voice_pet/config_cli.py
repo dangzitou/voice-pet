@@ -40,6 +40,11 @@ RUNTIME_FIELDS = {
 
 
 AUDIO_FIELDS = {
+    "record_device": "audio.record_device",
+    "voice_start_threshold": "audio.voice_start_threshold",
+    "silence_threshold": "audio.silence_threshold",
+    "silence_seconds": "audio.silence_seconds",
+    "wake_max_seconds": "audio.wake_max_seconds",
     "playback_command": "audio.playback_command",
     "playback_device": "audio.playback_device",
 }
@@ -48,8 +53,18 @@ AUDIO_FIELDS = {
 WAKEWORD_FIELDS = {
     "ack_text": "wakeword.ack_text",
     "ack_audio_path": "wakeword.ack_audio_path",
+    "max_extra_chars": "wakeword.max_extra_chars",
     "session_timeout_seconds": "wakeword.session_timeout_seconds",
 }
+
+
+SPOKEN_REPLY_FIELDS = {
+    "spoken_reply_max_chars": "runtime.spoken_reply_max_chars",
+    "spoken_reply_first_sentence": "runtime.spoken_reply_first_sentence",
+}
+
+
+CONFIG_LABELS = MODEL_FIELDS | AUDIO_FIELDS | WAKEWORD_FIELDS | RUNTIME_FIELDS | SPOKEN_REPLY_FIELDS
 
 
 def main() -> None:
@@ -93,6 +108,11 @@ def main() -> None:
     set_parser.add_argument("--language", dest="language", help="ASR language, for example: zh")
     set_parser.add_argument("--tts-voice", dest="tts_voice", help="TTS voice name")
     set_parser.add_argument("--tts-format", dest="tts_format", help="TTS audio format, for example: wav")
+    set_parser.add_argument("--record-device", dest="record_device", help="ALSA capture device passed to arecord -D")
+    set_parser.add_argument("--voice-start-threshold", dest="voice_start_threshold", type=int, help="RMS threshold to start recording")
+    set_parser.add_argument("--silence-threshold", dest="silence_threshold", type=int, help="RMS threshold treated as silence")
+    set_parser.add_argument("--silence-seconds", dest="silence_seconds", type=float, help="seconds of silence to end recording")
+    set_parser.add_argument("--wake-max-seconds", dest="wake_max_seconds", type=float, help="maximum seconds for a wake candidate")
     set_parser.add_argument("--playback-command", dest="playback_command", help="audio playback command")
     set_parser.add_argument("--playback-device", dest="playback_device", help="ALSA playback device passed to aplay -D")
     set_parser.add_argument("--ack-text", dest="ack_text", help="wake acknowledgement text")
@@ -102,10 +122,31 @@ def main() -> None:
         help="prebuilt wake acknowledgement audio file; falls back to ack text TTS if missing",
     )
     set_parser.add_argument(
+        "--wake-max-extra-chars",
+        dest="max_extra_chars",
+        type=int,
+        help="ignore wake matches when ASR text has more extra characters than this; -1 disables the filter",
+    )
+    set_parser.add_argument(
         "--wake-session-timeout",
         dest="session_timeout_seconds",
         type=float,
         help="seconds to stay in wake mode without new user speech",
+    )
+    set_parser.add_argument("--spoken-reply-max-chars", dest="spoken_reply_max_chars", type=int, help="maximum spoken reply characters before TTS")
+    spoken_reply = set_parser.add_mutually_exclusive_group()
+    spoken_reply.add_argument(
+        "--spoken-reply-first-sentence",
+        dest="spoken_reply_first_sentence",
+        action="store_true",
+        default=None,
+        help="only speak the first useful sentence",
+    )
+    spoken_reply.add_argument(
+        "--no-spoken-reply-first-sentence",
+        dest="spoken_reply_first_sentence",
+        action="store_false",
+        help="allow TTS to speak the full cleaned reply up to the character limit",
     )
     set_parser.add_argument(
         "--brain",
@@ -209,7 +250,7 @@ def _cmd_show(args: argparse.Namespace) -> None:
     for key, value in values["wakeword"].items():
         print(f"{WAKEWORD_FIELDS[key]}={value}")
     for key, value in values["runtime"].items():
-        print(f"{RUNTIME_FIELDS[key]}={value}")
+        print(f"{CONFIG_LABELS[key]}={value}")
     env_state = "set" if os.getenv("MIMO_API_KEY", "").strip() else "not set"
     print(f"MIMO_API_KEY={env_state}")
     pico_token_state = "set" if os.getenv("PICOCLAW_TOKEN", "").strip() else "not set"
@@ -252,6 +293,15 @@ def _cmd_set(args: argparse.Namespace) -> None:
             changes.append(f"{path}: {old_value} -> {value}")
 
     for key, path in RUNTIME_FIELDS.items():
+        value = getattr(args, key, None)
+        if value is None:
+            continue
+        old_value = runtime.get(key, "")
+        runtime[key] = value
+        if old_value != value:
+            changes.append(f"{path}: {old_value} -> {value}")
+
+    for key, path in SPOKEN_REPLY_FIELDS.items():
         value = getattr(args, key, None)
         if value is None:
             continue
@@ -326,7 +376,7 @@ def _config_values(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
         },
         "runtime": {
             key: _runtime_value(runtime, key)
-            for key in RUNTIME_FIELDS
+            for key in RUNTIME_FIELDS | SPOKEN_REPLY_FIELDS
         },
     }
 
@@ -348,7 +398,7 @@ def _audio_value(audio: dict[str, Any], key: str) -> str:
 
 def _runtime_value(runtime: dict[str, Any], key: str) -> Any:
     value = runtime.get(key, "")
-    if key in {"enable_local_actions", "picoclaw_manage_gateway"}:
+    if key in {"enable_local_actions", "picoclaw_manage_gateway", "spoken_reply_first_sentence"}:
         return bool(value)
     return value
 

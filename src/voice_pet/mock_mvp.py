@@ -12,7 +12,7 @@ from .brain.picoclaw import PicoBridgeConfig, PicoClawAdapter
 from .wakeword import WakewordDetector
 from .action_router import build_default_router
 from .player import AudioPlayer
-from .state_machine import VoicePetStateMachine
+from .state_machine import VoicePetStateMachine, _format_spoken_reply
 
 
 def main() -> None:
@@ -99,6 +99,11 @@ def main() -> None:
     user_asr = asr.transcribe_file(str(user_audio)).strip()
     local_reply = router.handle(user_asr) if router else None
     reply_text = local_reply or brain.reply(user_asr)
+    reply_text = _format_spoken_reply(
+        reply_text,
+        max_chars=int(runtime.get("spoken_reply_max_chars", 36)),
+        first_sentence=bool(runtime.get("spoken_reply_first_sentence", True)),
+    )
 
     reply_audio = work_dir / "reply.wav"
     reply_audio.write_bytes(tts.synthesize(reply_text))
@@ -145,6 +150,7 @@ def run_offline_mock(wake_text: str, user_text: str) -> None:
             },
             "wakeword": {
                 "aliases": ["小爱", "小艾", "小ai", "xiao ai", "xiaoai"],
+                "max_extra_chars": 6,
                 "cooldown_seconds": 0.0,
                 "session_timeout_seconds": 60.0,
                 "ack_text": "主人，咋啦",
@@ -154,6 +160,8 @@ def run_offline_mock(wake_text: str, user_text: str) -> None:
                 "work_dir": tmp,
                 "request_timeout_seconds": 1,
                 "poll_interval_seconds": 0.01,
+                "spoken_reply_max_chars": 36,
+                "spoken_reply_first_sentence": True,
                 "brain": "picoclaw",
                 "picoclaw_ws_url": "ws://127.0.0.1:18790/pico/ws",
                 "picoclaw_token": "offline-token",
@@ -234,7 +242,7 @@ class _OfflineBrain:
 
     def reply(self, text: str) -> str:
         self.requests.append(text)
-        return f"mock picoclaw reply: {text}"
+        return f"mock picoclaw reply: {text}。第二句会被口播整理去掉。😂"
 
 
 class _OfflinePlayer:

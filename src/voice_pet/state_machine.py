@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 
@@ -66,6 +67,7 @@ class VoicePetStateMachine:
         self.ack_text = wakeword.get("ack_text", "主人，咋啦")
         ack_audio_path = str(wakeword.get("ack_audio_path", "")).strip()
         self.ack_audio_path = Path(ack_audio_path).expanduser() if ack_audio_path else None
+        self.wake_max_extra_chars = int(wakeword.get("max_extra_chars", 6))
         self.cooldown_seconds = float(wakeword.get("cooldown_seconds", 3.0))
         self.session_timeout_seconds = float(wakeword.get("session_timeout_seconds", 60.0))
         self.listen_mode = str(audio.get("listen_mode", "streaming")).strip().lower()
@@ -81,6 +83,8 @@ class VoicePetStateMachine:
         self.silence_threshold = int(audio.get("silence_threshold", 500))
         self.silence_seconds = float(audio.get("silence_seconds", 1.2))
         self.poll_interval_seconds = float(runtime.get("poll_interval_seconds", 0.2))
+        self.spoken_reply_max_chars = int(runtime.get("spoken_reply_max_chars", 36))
+        self.spoken_reply_first_sentence = bool(runtime.get("spoken_reply_first_sentence", True))
         self._last_wake_at = 0.0
 
     def run(self) -> None:
@@ -115,6 +119,9 @@ class VoicePetStateMachine:
         print(f"[idle] asr={heard}")
         wake = self.detector.detect(heard)
         if not wake.matched:
+            return
+        if self.wake_max_extra_chars >= 0 and len(wake.cleaned_text) > self.wake_max_extra_chars:
+            print(f"[idle] ignored wake match with extra text={wake.cleaned_text}")
             return
 
         self._last_wake_at = time.monotonic()
@@ -168,7 +175,11 @@ class VoicePetStateMachine:
         print(f"[think] user={user_text}")
         local_reply = self.router.handle(user_text) if self.router else None
         reply = local_reply or self.brain.reply(user_text)
-        reply = reply.strip()
+        reply = _format_spoken_reply(
+            reply,
+            max_chars=self.spoken_reply_max_chars,
+            first_sentence=self.spoken_reply_first_sentence,
+        )
         if not reply:
             reply = "主人，我刚刚没组织好，再说一次吧。"
         print(f"[speak] reply={reply}")
@@ -212,3 +223,44 @@ class VoicePetStateMachine:
             silence_threshold=self.silence_threshold,
             silence_seconds=self.silence_seconds,
         )
+
+
+_EMOJI = re.compile(r"[\U00010000-\U0010ffff]")
+_MARKDOWN_NOISE = re.compile(r"[*_`>#~\[\]]+")
+_LEADING_FILLERS = re.compile(r"^(?:[哈啊嗯呃额呵嘿]{1,}|哈哈+|呵呵+|嘿嘿+)[，。,.!?！？；;：:\s]*")
+_SPACES = re.compile(r"\s+")
+_SENTENCE_SPLIT = re.compile(r"(?<=[。！？!?；;])")
+_TRIM_CHARS = " ，。,.!?！？；;：:"
+
+
+def _format_spoken_reply(text: str, max_chars: int, first_sentence: bool) -> str:
+    spoken = _clean_spoken_text(text)
+    if first_sentence:
+        spoken = _pick_first_useful_sentence(spoken)
+    if max_chars > 0 and len(spoken) > max_chars:
+        spoken = spoken[:max_chars].rstrip(_TRIM_CHARS)
+    return spoken.strip(_TRIM_CHARS + " ")
+
+
+def _clean_spoken_text(text: str) -> str:
+    text = _EMOJI.sub("", text)
+    text = _MARKDOWN_NOISE.sub("", text)
+    text = text.replace("\r", " ").replace("\n", " ")
+    text = _SPACES.sub(" ", text).strip()
+    return _LEADING_FILLERS.sub("", text).strip()
+
+
+def _pick_first_useful_sentence(text: str) -> str:
+    for sentence in _SENTENCE_SPLIT.split(text):
+        sentence = sentence.strip(_TRIM_CHARS + " ")
+        if not sentence:
+            continue
+        if _is_low_info_sentence(sentence):
+            continue
+        return sentence
+    return text
+
+
+def _is_low_info_sentence(sentence: str) -> bool:
+    compact = sentence.replace("哈", "").replace("啊", "").replace("嗯", "").strip(_TRIM_CHARS + " ")
+    return len(sentence) <= 6 and len(compact) <= 1
