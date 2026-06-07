@@ -39,6 +39,12 @@ RUNTIME_FIELDS = {
 }
 
 
+AUDIO_FIELDS = {
+    "playback_command": "audio.playback_command",
+    "playback_device": "audio.playback_device",
+}
+
+
 WAKEWORD_FIELDS = {
     "ack_text": "wakeword.ack_text",
     "ack_audio_path": "wakeword.ack_audio_path",
@@ -87,6 +93,8 @@ def main() -> None:
     set_parser.add_argument("--language", dest="language", help="ASR language, for example: zh")
     set_parser.add_argument("--tts-voice", dest="tts_voice", help="TTS voice name")
     set_parser.add_argument("--tts-format", dest="tts_format", help="TTS audio format, for example: wav")
+    set_parser.add_argument("--playback-command", dest="playback_command", help="audio playback command")
+    set_parser.add_argument("--playback-device", dest="playback_device", help="ALSA playback device passed to aplay -D")
     set_parser.add_argument("--ack-text", dest="ack_text", help="wake acknowledgement text")
     set_parser.add_argument(
         "--ack-audio-path",
@@ -196,6 +204,8 @@ def _cmd_show(args: argparse.Namespace) -> None:
     print(f"config: {config_path}")
     for key, value in values["mimo"].items():
         print(f"{MODEL_FIELDS[key]}={value}")
+    for key, value in values["audio"].items():
+        print(f"{AUDIO_FIELDS[key]}={value}")
     for key, value in values["wakeword"].items():
         print(f"{WAKEWORD_FIELDS[key]}={value}")
     for key, value in values["runtime"].items():
@@ -210,6 +220,7 @@ def _cmd_set(args: argparse.Namespace) -> None:
     config_path = Path(args.config).expanduser()
     data = _read_config(config_path)
     mimo = data.setdefault("mimo", {})
+    audio = data.setdefault("audio", {})
     wakeword = data.setdefault("wakeword", {})
     runtime = data.setdefault("runtime", {})
 
@@ -230,6 +241,15 @@ def _cmd_set(args: argparse.Namespace) -> None:
         mimo["api_key"] = ""
         if old_value:
             changes.append(f"{MODEL_FIELDS['api_key']}: set -> not set")
+
+    for key, path in AUDIO_FIELDS.items():
+        value = getattr(args, key, None)
+        if value is None:
+            continue
+        old_value = str(audio.get(key, ""))
+        audio[key] = value
+        if old_value != value:
+            changes.append(f"{path}: {old_value} -> {value}")
 
     for key, path in RUNTIME_FIELDS.items():
         value = getattr(args, key, None)
@@ -288,10 +308,17 @@ def _config_values(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
     wakeword = data.get("wakeword", {})
     if not isinstance(wakeword, dict):
         wakeword = {}
+    audio = data.get("audio", {})
+    if not isinstance(audio, dict):
+        audio = {}
     return {
         "mimo": {
             key: _mimo_value(mimo, key)
             for key in MODEL_FIELDS
+        },
+        "audio": {
+            key: _audio_value(audio, key)
+            for key in AUDIO_FIELDS
         },
         "wakeword": {
             key: _wakeword_value(wakeword, key)
@@ -313,6 +340,10 @@ def _mimo_value(mimo: dict[str, Any], key: str) -> str:
 
 def _secret_state(value: str) -> str:
     return "set" if value.strip() else "not set"
+
+
+def _audio_value(audio: dict[str, Any], key: str) -> str:
+    return str(audio.get(key, ""))
 
 
 def _runtime_value(runtime: dict[str, Any], key: str) -> Any:

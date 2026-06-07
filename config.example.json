@@ -13,6 +13,8 @@
     "sample_rate": 16000,
     "channels": 1,
     "record_device": "",
+    "playback_command": "aplay",
+    "playback_device": "",
     "listen_mode": "streaming",
     "listen_window_seconds": 2.5,
     "wake_max_seconds": 5.0,

@@ -59,6 +59,9 @@ pico_bridge_once.js        # Node WebSocket helper for PicoClaw bridge
 - ALSA tools:
   - `arecord`
   - `aplay`
+- Optional Bluetooth output:
+  - `bluez-alsa-utils`
+  - `libasound2-plugin-bluez`
 - MiMo API key
 - Node.js and npm dependencies:
   - `npm install`
@@ -94,12 +97,21 @@ PYTHONPATH=src python3 -m voice_pet.config_cli set --config ./config.json \
   --tts-model-name mimo-v2.5-tts \
   --tts-voice mimo_default \
   --language zh \
+  --playback-command aplay \
   --brain picoclaw \
   --picoclaw-ws-url ws://127.0.0.1:18790/pico/ws \
   --picoclaw-session-id voice-pet
 ```
 
-Supported voice model fields are: `--api-key`, `--clear-api-key`, `--api-base` / `--base-url`, `--model` / `--llm-model` / `--model-name`, `--asr-model` / `--asr-model-name`, `--tts-model` / `--tts-model-name`, `--tts-voice`, `--tts-format`, and `--language`. `show` only prints whether the API key is configured; it does not print the key.
+Supported voice model fields are: `--api-key`, `--clear-api-key`, `--api-base` / `--base-url`, `--model` / `--llm-model` / `--model-name`, `--asr-model` / `--asr-model-name`, `--tts-model` / `--tts-model-name`, `--tts-voice`, `--tts-format`, and `--language`. Audio playback can be configured with `--playback-command` and `--playback-device`. `show` only prints whether the API key is configured; it does not print the key.
+
+To pin playback to a BlueALSA Bluetooth speaker, for example BT501:
+
+```bash
+PYTHONPATH=src python3 -m voice_pet.config_cli set --config ./config.json \
+  --playback-command aplay \
+  --playback-device "bluealsa:DEV=D6:BF:DF:4A:EF:E2,PROFILE=a2dp,VOL=100+"
+```
 
 To prebuild the `主人，咋啦` wake acknowledgement, synthesize it once and then save the path in config:
 

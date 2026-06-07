@@ -59,6 +59,9 @@ pico_bridge_once.js        # Node WebSocket helper for PicoClaw bridge
 - ALSA 工具：
   - `arecord`
   - `aplay`
+- 可选蓝牙输出：
+  - `bluez-alsa-utils`
+  - `libasound2-plugin-bluez`
 - MiMo API key
 - Node.js 和 npm 依赖：
   - `npm install`
@@ -94,12 +97,21 @@ PYTHONPATH=src python3 -m voice_pet.config_cli set --config ./config.json \
   --tts-model-name mimo-v2.5-tts \
   --tts-voice mimo_default \
   --language zh \
+  --playback-command aplay \
   --brain picoclaw \
   --picoclaw-ws-url ws://127.0.0.1:18790/pico/ws \
   --picoclaw-session-id voice-pet
 ```
 
-支持修改的语音模型字段包括：`--api-key`、`--clear-api-key`、`--api-base` / `--base-url`、`--model` / `--llm-model` / `--model-name`、`--asr-model` / `--asr-model-name`、`--tts-model` / `--tts-model-name`、`--tts-voice`、`--tts-format`、`--language`。`show` 只会显示 API key 是否已配置，不会把 key 打印出来。
+支持修改的语音模型字段包括：`--api-key`、`--clear-api-key`、`--api-base` / `--base-url`、`--model` / `--llm-model` / `--model-name`、`--asr-model` / `--asr-model-name`、`--tts-model` / `--tts-model-name`、`--tts-voice`、`--tts-format`、`--language`。音频播放可以用 `--playback-command` 和 `--playback-device` 配置；`show` 只会显示 API key 是否已配置，不会把 key 打印出来。
+
+如果要固定输出到 BlueALSA 蓝牙音箱，例如 BT501：
+
+```bash
+PYTHONPATH=src python3 -m voice_pet.config_cli set --config ./config.json \
+  --playback-command aplay \
+  --playback-device "bluealsa:DEV=D6:BF:DF:4A:EF:E2,PROFILE=a2dp,VOL=100+"
+```
 
 如果要把“主人，咋啦”预制成音频，先用 TTS demo 生成一次，再把路径写入配置：
 

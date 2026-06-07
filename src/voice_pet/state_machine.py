@@ -56,7 +56,10 @@ class VoicePetStateMachine:
             self.brain = DirectLLMAdapter(api_key, mimo["api_base"], mimo["llm_model"], timeout)
         else:
             raise ValueError(f"unsupported runtime.brain: {brain_kind}")
-        self.player = AudioPlayer()
+        self.player = AudioPlayer(
+            command=audio.get("playback_command", "aplay"),
+            device=audio.get("playback_device", ""),
+        )
         self.gateway = PicoClawGatewayProcess(runtime)
         self.router = build_default_router() if runtime.get("enable_local_actions", False) else None
         self.detector = WakewordDetector(wakeword.get("aliases", []))

@@ -29,6 +29,10 @@ def load_config(path: str) -> dict[str, Any]:
     _set_env_override(wakeword, "ack_text", "VOICE_PET_ACK_TEXT")
     _set_env_override(wakeword, "ack_audio_path", "VOICE_PET_ACK_AUDIO_PATH")
 
+    audio = data.setdefault("audio", {})
+    _set_env_override(audio, "playback_command", "VOICE_PET_PLAYBACK_COMMAND")
+    _set_env_override(audio, "playback_device", "VOICE_PET_PLAYBACK_DEVICE")
+
     runtime = data.setdefault("runtime", {})
     _set_env_override(runtime, "brain", "VOICE_PET_BRAIN")
     _set_env_override(runtime, "picoclaw_ws_url", "PICOCLAW_WS_URL")

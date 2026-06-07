@@ -30,6 +30,7 @@ def main() -> None:
 
     cfg = load_config(args.config)
     mimo = cfg["mimo"]
+    audio = cfg["audio"]
     runtime = cfg["runtime"]
     wakeword_cfg = cfg["wakeword"]
     api_key = mimo.get("api_key", "").strip()
@@ -62,7 +63,10 @@ def main() -> None:
         raise ValueError(f"unsupported runtime.brain: {brain_kind}")
     detector = WakewordDetector(wakeword_cfg.get("aliases", []))
     router = build_default_router() if runtime.get("enable_local_actions", False) else None
-    player = AudioPlayer()
+    player = AudioPlayer(
+        command=audio.get("playback_command", "aplay"),
+        device=audio.get("playback_device", ""),
+    )
 
     wake_audio = work_dir / "wake.wav"
     wake_audio.write_bytes(tts.synthesize(args.wake_text))
