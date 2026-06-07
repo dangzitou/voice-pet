@@ -1,0 +1,23 @@
+{
+  "name": "voice-pet",
+  "version": "1.0.0",
+  "description": "`voice-pet` 是一个面向树莓派的本地语音助手原型。",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dangzitou/voice-pet.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/dangzitou/voice-pet/issues"
+  },
+  "homepage": "https://github.com/dangzitou/voice-pet#readme",
+  "dependencies": {
+    "ws": "^8.21.0"
+  }
+}
