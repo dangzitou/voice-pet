@@ -237,7 +237,8 @@ For normal ALSA default output:
 ```bash
 voice-pet config set \
   --playback-command aplay \
-  --playback-device ""
+  --playback-device "" \
+  --playback-cooldown 0.5
 ```
 
 For a BlueALSA Bluetooth speaker such as BT501:
@@ -254,7 +255,8 @@ bluetoothctl
 aplay -L | grep -i bluealsa
 voice-pet config set \
   --playback-command aplay \
-  --playback-device "bluealsa:DEV=<BT_MAC>,PROFILE=a2dp,VOL=100+"
+  --playback-device "bluealsa:DEV=<BT_MAC>,PROFILE=a2dp,VOL=100+" \
+  --playback-cooldown 0.5
 ```
 
 ### 7. Prebuild the Wake Acknowledgement
@@ -333,6 +335,7 @@ Common commands:
 | `voice-pet logs -f` | Follow voice-pet logs |
 | `voice-pet logs --target gateway -f` | Follow PicoClaw gateway logs |
 | `voice-pet config show` | Show current model, audio, and runtime configuration |
+| `voice-pet config set --playback-cooldown 0.5` | Set the wait time after playback before recording again |
 | `voice-pet demo --text "主人，咋啦"` | Run a MiMo TTS/ASR debug demo |
 | `voice-pet mock --offline --wake-text "小爱小爱" --user-text "小爱今天厦门天气咋样"` | Run the offline mock end-to-end test |
 
@@ -397,7 +400,7 @@ journalctl --user -u voice-pet -f
 7. Transcribe user speech with MiMo ASR; only speech prefixed with `小爱` is forwarded to PicoClaw gateway
 8. Receive the reply text from PicoClaw
 9. Synthesize the reply with MiMo TTS and play it locally
-10. Continue waiting for the next prefixed user utterance; leave wake mode after 60 seconds without processable speech
+10. Wait until playback finishes and `playback_cooldown_seconds` elapses, then continue waiting for the next prefixed user utterance; leave wake mode after 60 seconds without processable speech
 
 ## Notes
 

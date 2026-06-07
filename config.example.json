@@ -16,6 +16,7 @@
     "record_device": "",
     "playback_command": "aplay",
     "playback_device": "",
+    "playback_cooldown_seconds": 0.5,
     "listen_mode": "streaming",
     "listen_window_seconds": 2.5,
     "wake_max_seconds": 5.0,

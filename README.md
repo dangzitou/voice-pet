@@ -237,7 +237,8 @@ voice-pet config set \
 ```bash
 voice-pet config set \
   --playback-command aplay \
-  --playback-device ""
+  --playback-device "" \
+  --playback-cooldown 0.5
 ```
 
 如果使用 BlueALSA 蓝牙音箱，例如 BT501：
@@ -254,7 +255,8 @@ bluetoothctl
 aplay -L | grep -i bluealsa
 voice-pet config set \
   --playback-command aplay \
-  --playback-device "bluealsa:DEV=<BT_MAC>,PROFILE=a2dp,VOL=100+"
+  --playback-device "bluealsa:DEV=<BT_MAC>,PROFILE=a2dp,VOL=100+" \
+  --playback-cooldown 0.5
 ```
 
 ### 7. 预制唤醒确认音频
@@ -333,6 +335,7 @@ voice-pet start --no-gateway
 | `voice-pet logs -f` | 实时查看 voice-pet 日志 |
 | `voice-pet logs --target gateway -f` | 实时查看 PicoClaw gateway 日志 |
 | `voice-pet config show` | 查看当前模型、音频和 runtime 配置 |
+| `voice-pet config set --playback-cooldown 0.5` | 设置每次播放后再开麦前的等待时间 |
 | `voice-pet demo --text "主人，咋啦"` | 跑一次 MiMo TTS/ASR 调试 demo |
 | `voice-pet mock --offline --wake-text "小爱小爱" --user-text "小爱今天厦门天气咋样"` | 跑离线 mock 闭环测试 |
 
@@ -397,7 +400,7 @@ journalctl --user -u voice-pet -f
 7. 用户语音经 MiMo ASR 转文字；只有以 `小爱` 开头的内容才转发给 PicoClaw gateway
 8. PicoClaw 返回回复文本
 9. 使用 MiMo TTS 合成回复并本地播放
-10. 播放后继续等待下一段带前缀的用户语音；60 秒没有可处理语音则退出唤醒态
+10. 播放完成并经过 `playback_cooldown_seconds` 后，才继续等待下一段带前缀的用户语音；60 秒没有可处理语音则退出唤醒态
 
 ## 说明
 

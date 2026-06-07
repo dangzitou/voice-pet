@@ -48,6 +48,7 @@ AUDIO_FIELDS = {
     "wake_max_seconds": "audio.wake_max_seconds",
     "playback_command": "audio.playback_command",
     "playback_device": "audio.playback_device",
+    "playback_cooldown_seconds": "audio.playback_cooldown_seconds",
 }
 
 
@@ -121,6 +122,12 @@ def main() -> None:
     set_parser.add_argument("--wake-max-seconds", dest="wake_max_seconds", type=float, help="maximum seconds for a wake candidate")
     set_parser.add_argument("--playback-command", dest="playback_command", help="audio playback command")
     set_parser.add_argument("--playback-device", dest="playback_device", help="ALSA playback device passed to aplay -D")
+    set_parser.add_argument(
+        "--playback-cooldown",
+        dest="playback_cooldown_seconds",
+        type=float,
+        help="seconds to wait after each playback before recording again",
+    )
     set_parser.add_argument("--ack-text", dest="ack_text", help="wake acknowledgement text")
     set_parser.add_argument(
         "--ack-audio-path",

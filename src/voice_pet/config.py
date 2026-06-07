@@ -35,6 +35,7 @@ def load_config(path: str) -> dict[str, Any]:
     audio = data.setdefault("audio", {})
     _set_env_override(audio, "playback_command", "VOICE_PET_PLAYBACK_COMMAND")
     _set_env_override(audio, "playback_device", "VOICE_PET_PLAYBACK_DEVICE")
+    _set_env_override(audio, "playback_cooldown_seconds", "VOICE_PET_PLAYBACK_COOLDOWN_SECONDS")
 
     mimo = data.setdefault("mimo", {})
     _set_env_override(mimo, "tts_style_prompt", "VOICE_PET_TTS_STYLE_PROMPT")

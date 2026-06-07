@@ -107,6 +107,7 @@ class VoicePetStateMachine:
         self.voice_start_threshold = int(audio.get("voice_start_threshold", audio.get("silence_threshold", 500)))
         self.silence_threshold = int(audio.get("silence_threshold", 500))
         self.silence_seconds = float(audio.get("silence_seconds", 1.2))
+        self.playback_cooldown_seconds = max(0.0, float(audio.get("playback_cooldown_seconds", 0.5)))
         self.poll_interval_seconds = float(runtime.get("poll_interval_seconds", 0.2))
         self.spoken_reply_max_chars = int(runtime.get("spoken_reply_max_chars", 36))
         self.spoken_reply_first_sentence = bool(runtime.get("spoken_reply_first_sentence", True))
@@ -161,13 +162,13 @@ class VoicePetStateMachine:
             try:
                 self._ensure_ack_audio(ack_path, ack_text)
                 print(f"[wake] ack_audio={ack_path}")
-                self._time_call("wake_ack_play", self.player.play_file, str(ack_path))
+                self._play_file_sync("wake_ack", ack_path)
                 return
             except Exception as exc:
                 print(f"[wake] ack_audio_failed={exc}")
         if self.ack_audio_path and self.ack_audio_path.is_file():
             print(f"[wake] ack_audio={self.ack_audio_path}")
-            self._time_call("wake_ack_play", self.player.play_file, str(self.ack_audio_path))
+            self._play_file_sync("wake_ack", self.ack_audio_path)
             return
         if self.ack_audio_path:
             print(f"[wake] ack_audio missing, fallback_tts={self.ack_audio_path}")
@@ -233,22 +234,32 @@ class VoicePetStateMachine:
         started_at = time.monotonic()
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(self.brain.reply, user_text)
-            try:
-                reply = future.result(timeout=self.thinking_prompt_delay_seconds)
-                elapsed_ms = (time.monotonic() - started_at) * 1000
-                print(f"[timing] brain_reply={elapsed_ms:.0f}ms prompt_triggered=no")
-                return reply
-            except FutureTimeoutError:
+            prompt_count = 0
+            next_prompt_at = started_at + self.thinking_prompt_delay_seconds
+
+            while True:
+                try:
+                    timeout_seconds = max(0.0, next_prompt_at - time.monotonic())
+                    reply = future.result(timeout=timeout_seconds)
+                    elapsed_ms = (time.monotonic() - started_at) * 1000
+                    print(
+                        f"[timing] brain_reply={elapsed_ms:.0f}ms "
+                        f"prompt_count={prompt_count}"
+                    )
+                    return reply
+                except FutureTimeoutError:
+                    prompt_count += 1
+
                 elapsed_ms = (time.monotonic() - started_at) * 1000
                 print(
                     f"[timing] brain_reply_waited={elapsed_ms:.0f}ms "
-                    f"prompt_delay={self.thinking_prompt_delay_seconds:.1f}s prompt_triggered=yes"
+                    f"prompt_delay={self.thinking_prompt_delay_seconds:.1f}s "
+                    f"prompt_count={prompt_count}"
                 )
                 self.play_thinking_prompt()
-                reply = future.result()
-                total_ms = (time.monotonic() - started_at) * 1000
-                print(f"[timing] brain_reply_total={total_ms:.0f}ms prompt_triggered=yes")
-                return reply
+                next_prompt_at += self.thinking_prompt_delay_seconds
+                while next_prompt_at <= time.monotonic():
+                    next_prompt_at += self.thinking_prompt_delay_seconds
 
     def play_thinking_prompt(self) -> None:
         prompt_path = self._pick_thinking_prompt_path()
@@ -257,7 +268,7 @@ class VoicePetStateMachine:
         try:
             self._ensure_prompt_audio(prompt_path)
             print(f"[think] prompt_audio={prompt_path}")
-            self._time_call("think_prompt_play", self.player.play_file, str(prompt_path))
+            self._play_file_sync("think_prompt", prompt_path)
         except Exception as exc:
             print(f"[think] prompt_audio_failed={exc}")
 
@@ -306,7 +317,12 @@ class VoicePetStateMachine:
         audio_bytes = self._time_call(f"{prefix}_tts", self.tts.synthesize, text)
         audio_path = self.work_dir / f"{prefix}.wav"
         audio_path.write_bytes(audio_bytes)
-        self._time_call(f"{prefix}_play", self.player.play_file, str(audio_path))
+        self._play_file_sync(prefix, audio_path)
+
+    def _play_file_sync(self, label: str, path: Path) -> None:
+        self._time_call(f"{label}_play", self.player.play_file, str(path))
+        if self.playback_cooldown_seconds > 0:
+            self._time_call(f"{label}_playback_cooldown", time.sleep, self.playback_cooldown_seconds)
 
     def _record_wake_candidate(self, path: Path) -> None:
         if self.listen_mode == "fixed_window":
