@@ -54,14 +54,23 @@ class VoicePetStateMachine:
         self.detector = WakewordDetector(wakeword.get("aliases", []))
         self.ack_text = wakeword.get("ack_text", "主人，咋啦")
         self.cooldown_seconds = float(wakeword.get("cooldown_seconds", 3.0))
+        self.listen_mode = str(audio.get("listen_mode", "streaming")).strip().lower()
         self.listen_window_seconds = float(audio.get("listen_window_seconds", 2.5))
+        self.wake_max_seconds = float(audio.get("wake_max_seconds", 5.0))
+        self.wake_min_seconds = float(audio.get("wake_min_seconds", 0.4))
         self.utterance_max_seconds = float(audio.get("utterance_max_seconds", 8))
         self.utterance_min_seconds = float(audio.get("utterance_min_seconds", 1.0))
+        self.utterance_start_timeout_seconds = float(audio.get("utterance_start_timeout_seconds", 8.0))
+        self.stream_chunk_ms = int(audio.get("stream_chunk_ms", 100))
+        self.pre_roll_seconds = float(audio.get("pre_roll_seconds", 0.3))
+        self.voice_start_threshold = int(audio.get("voice_start_threshold", audio.get("silence_threshold", 500)))
+        self.silence_threshold = int(audio.get("silence_threshold", 500))
+        self.silence_seconds = float(audio.get("silence_seconds", 1.2))
         self.poll_interval_seconds = float(runtime.get("poll_interval_seconds", 0.2))
         self._last_wake_at = 0.0
 
     def run(self) -> None:
-        print("[voice-pet] started, waiting for wakeword...")
+        print(f"[voice-pet] started, waiting for wakeword... mode={self.listen_mode}")
         while True:
             try:
                 self.run_once()
@@ -77,8 +86,8 @@ class VoicePetStateMachine:
             time.sleep(self.poll_interval_seconds)
             return
 
-        idle_path = self.work_dir / "idle-listen.wav"
-        self.capture.record_for_duration(str(idle_path), self.listen_window_seconds)
+        idle_path = self.work_dir / "wake-candidate.wav"
+        self._record_wake_candidate(idle_path)
         heard = self.asr.transcribe_file(str(idle_path))
         heard = heard.strip()
         if not heard:
@@ -98,11 +107,11 @@ class VoicePetStateMachine:
             user_text = wake.cleaned_text
         else:
             user_audio = self.work_dir / "user-utterance.wav"
-            self.capture.record_until_silence(
-                str(user_audio),
-                max_seconds=self.utterance_max_seconds,
-                min_seconds=self.utterance_min_seconds,
-            )
+            try:
+                self._record_user_utterance(user_audio)
+            except TimeoutError:
+                print("[record] no user speech before timeout")
+                return
             user_text = self.asr.transcribe_file(str(user_audio)).strip()
 
         if not user_text:
@@ -122,3 +131,32 @@ class VoicePetStateMachine:
         audio_path = self.work_dir / f"{prefix}.wav"
         audio_path.write_bytes(audio_bytes)
         self.player.play_file(str(audio_path))
+
+    def _record_wake_candidate(self, path: Path) -> None:
+        if self.listen_mode == "fixed_window":
+            self.capture.record_for_duration(str(path), self.listen_window_seconds)
+            return
+
+        self.capture.record_next_utterance(
+            str(path),
+            max_seconds=self.wake_max_seconds,
+            min_seconds=self.wake_min_seconds,
+            chunk_ms=self.stream_chunk_ms,
+            pre_roll_seconds=self.pre_roll_seconds,
+            start_threshold=self.voice_start_threshold,
+            silence_threshold=self.silence_threshold,
+            silence_seconds=self.silence_seconds,
+        )
+
+    def _record_user_utterance(self, path: Path) -> None:
+        self.capture.record_next_utterance(
+            str(path),
+            max_seconds=self.utterance_max_seconds,
+            min_seconds=self.utterance_min_seconds,
+            chunk_ms=self.stream_chunk_ms,
+            pre_roll_seconds=self.pre_roll_seconds,
+            start_timeout_seconds=self.utterance_start_timeout_seconds,
+            start_threshold=self.voice_start_threshold,
+            silence_threshold=self.silence_threshold,
+            silence_seconds=self.silence_seconds,
+        )

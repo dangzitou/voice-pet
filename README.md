@@ -10,6 +10,7 @@ English README: [README.en.md](./README.en.md)
 
 - 集成 MiMo ASR、TTS 和文本模型
 - 使用 `arecord` 进行本地录音
+- 使用本地流式语音活动检测减少空闲态 ASR 请求
 - 使用 `aplay` 进行本地播放
 - 支持唤醒词别名匹配：`小爱`、`小艾`、`小ai`、`xiao ai`、`xiaoai`
 - 提供单轮语音交互状态机
@@ -22,11 +23,12 @@ English README: [README.en.md](./README.en.md)
 
 - 端到端闭环：监听 -> 转写 -> 回复 -> 合成 -> 播放
 - 最小运行时状态机：`idle -> wake -> record -> think -> speak -> idle`
+- 本地流式语音活动检测：持续读取麦克风 PCM，检测到完整语音片段后才调用 ASR
 - MiMo 的 ASR、TTS 和文本回复适配器
 
 暂未实现：
 
-- 流式 VAD / 离线唤醒词引擎
+- 离线关键词唤醒引擎
 - 多轮会话管理
 - 真实天气 / 音乐服务集成
 - PicoClaw 适配器
@@ -36,6 +38,7 @@ English README: [README.en.md](./README.en.md)
 ```text
 src/voice_pet/
 ├── main.py                # CLI 入口
+├── config_cli.py          # 配置管理 CLI
 ├── state_machine.py       # 运行时主循环
 ├── audio_capture.py       # 录音与静音截断
 ├── wakeword.py            # 唤醒词别名匹配
@@ -72,6 +75,28 @@ export MIMO_API_KEY="<your-token>"
 
 也可以直接写入 `config.json`，但更推荐使用环境变量。
 
+也可以用配置 CLI 创建、查看和修改模型配置：
+
+```bash
+PYTHONPATH=src python3 -m voice_pet.config_cli init --config ./config.json
+PYTHONPATH=src python3 -m voice_pet.config_cli show --config ./config.json
+PYTHONPATH=src python3 -m voice_pet.config_cli set --config ./config.json \
+  --model mimo-v2.5 \
+  --asr-model mimo-v2.5-asr \
+  --tts-model mimo-v2.5-tts \
+  --tts-voice mimo_default \
+  --language zh
+```
+
+支持修改的模型字段包括：`--api-base`、`--model` / `--llm-model`、`--asr-model`、`--tts-model`、`--tts-voice`、`--tts-format`、`--language`。
+
+默认使用本地流式监听：
+
+- `audio.listen_mode = "streaming"`：持续读取麦克风音频，只在检测到一段语音后调用 ASR 确认唤醒词
+- `audio.listen_mode = "fixed_window"`：切回旧的固定窗口录音模式，便于排查阈值或麦克风问题
+- `audio.voice_start_threshold` / `audio.silence_threshold`：控制语音开始和静音结束阈值
+- `audio.stream_chunk_ms` / `audio.pre_roll_seconds`：控制流式读取块大小和触发前保留音频
+
 如果要把 PicoClaw 作为回复后端，还需要在 `config.json` 里设置：
 
 - `runtime.brain = "picoclaw"`
@@ -104,17 +129,18 @@ PYTHONPATH=src python3 -m voice_pet.mock_mvp --config ~/.picoclaw/voice-pet/conf
 
 ## 运行流程
 
-1. 录制一段空闲态环境音
-2. 使用 MiMo ASR 转写音频
-3. 匹配唤醒词别名
-4. 播报 `主人，咋啦`
-5. 录制用户问题
-6. 路由到动作处理器或文本模型
-7. 使用 MiMo TTS 合成回复
-8. 本地播放结果音频
+1. 本地持续读取麦克风 PCM
+2. 检测到一段完整语音后写入候选唤醒音频
+3. 使用 MiMo ASR 转写候选音频
+4. 匹配唤醒词别名
+5. 播报 `主人，咋啦`
+6. 流式录制用户问题，直到静音或达到最长时长
+7. 路由到动作处理器或文本模型
+8. 使用 MiMo TTS 合成回复
+9. 本地播放结果音频
 
 ## 说明
 
 当前 MVP 直接依赖系统音频命令，而不是额外引入 Python 音频栈。这样可以减少运行时依赖，便于在树莓派上部署和排查问题。
 
-下一步重点会放在流式唤醒、打断处理和动作集成上。
+当前“流式唤醒”是轻量的本地语音活动门控，唤醒词本身仍由 MiMo ASR 转写后匹配。下一步重点会放在离线关键词引擎、打断处理和动作集成上。
