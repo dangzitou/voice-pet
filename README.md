@@ -309,11 +309,17 @@ voice-pet config show
 
 ### 9. 启动完整系统
 
-`voice-pet start` 会在后台启动 PicoClaw gateway 和 voice-pet runtime；如果 gateway 已经健康运行，它会复用已有 gateway。启动时会加载 `~/.picoclaw/voice-pet/voice-pet.env`，并清掉本机代理环境，避免 localhost gateway 请求被代理干扰。
+`voice-pet start` 会在后台启动 PicoClaw gateway 和 voice-pet runtime；如果 gateway 已经健康运行，它会复用已有 gateway。启动完成后会自动实时输出 voice-pet 日志，按 `Ctrl+C` 只会退出日志跟随，后台服务会继续运行。启动时会加载 `~/.picoclaw/voice-pet/voice-pet.env`，并清掉本机代理环境，避免 localhost gateway 请求被代理干扰。
 
 ```bash
 voice-pet start
 voice-pet status
+```
+
+如果只想后台静默启动，不跟随日志：
+
+```bash
+voice-pet start --detach
 ```
 
 如果你已经用别的方式启动 PicoClaw gateway，只启动语音 runtime：
@@ -326,8 +332,10 @@ voice-pet start --no-gateway
 
 | 命令 | 用途 |
 | --- | --- |
-| `voice-pet start` | 后台启动 PicoClaw gateway 和 voice-pet |
-| `voice-pet start --no-gateway` | 只启动 voice-pet，连接已有 gateway |
+| `voice-pet start` | 启动 PicoClaw gateway 和 voice-pet，并实时输出 voice-pet 日志 |
+| `voice-pet start --detach` | 后台启动完整系统，不跟随日志 |
+| `voice-pet start --no-gateway` | 只启动 voice-pet，连接已有 gateway，并实时输出日志 |
+| `voice-pet start --no-gateway --detach` | 只后台启动 voice-pet，不跟随日志 |
 | `voice-pet stop` | 停止 voice-pet 和 PicoClaw gateway |
 | `voice-pet stop --no-gateway` | 只停止 voice-pet |
 | `voice-pet restart` | 重启完整语音 runtime |

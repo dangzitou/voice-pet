@@ -309,11 +309,17 @@ voice-pet config show
 
 ### 9. Start the Full System
 
-`voice-pet start` launches PicoClaw gateway and the voice-pet runtime in the background. If the gateway is already healthy, it reuses it. Startup loads `~/.picoclaw/voice-pet/voice-pet.env` and strips local proxy env vars so localhost gateway traffic is not routed through a proxy.
+`voice-pet start` launches PicoClaw gateway and the voice-pet runtime in the background. If the gateway is already healthy, it reuses it. After startup it follows the voice-pet log in real time; pressing `Ctrl+C` only stops log following, while the background services keep running. Startup loads `~/.picoclaw/voice-pet/voice-pet.env` and strips local proxy env vars so localhost gateway traffic is not routed through a proxy.
 
 ```bash
 voice-pet start
 voice-pet status
+```
+
+To start quietly in the background without following logs:
+
+```bash
+voice-pet start --detach
 ```
 
 If PicoClaw gateway is already managed elsewhere, start only the voice runtime:
@@ -326,8 +332,10 @@ Common commands:
 
 | Command | Purpose |
 | --- | --- |
-| `voice-pet start` | Start PicoClaw gateway and voice-pet in the background |
-| `voice-pet start --no-gateway` | Start only voice-pet and connect to an existing gateway |
+| `voice-pet start` | Start PicoClaw gateway and voice-pet, then follow voice-pet logs |
+| `voice-pet start --detach` | Start the full system in the background without following logs |
+| `voice-pet start --no-gateway` | Start only voice-pet, connect to an existing gateway, then follow logs |
+| `voice-pet start --no-gateway --detach` | Start only voice-pet in the background without following logs |
 | `voice-pet stop` | Stop voice-pet and PicoClaw gateway |
 | `voice-pet stop --no-gateway` | Stop only voice-pet |
 | `voice-pet restart` | Restart the full voice runtime |

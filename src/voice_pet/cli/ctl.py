@@ -34,8 +34,10 @@ def main() -> None:
     parser.add_argument("--env", default=DEFAULT_ENV_PATH, help=f"env file path, default: {DEFAULT_ENV_PATH}")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    start_parser = subparsers.add_parser("start", help="start PicoClaw gateway and voice-pet in the background")
+    start_parser = subparsers.add_parser("start", help="start PicoClaw gateway and voice-pet, then follow logs")
     start_parser.add_argument("--no-gateway", action="store_true", help="start only voice-pet")
+    start_parser.add_argument("--detach", action="store_true", help="start in the background without following logs")
+    start_parser.add_argument("-n", "--lines", type=int, default=80, help="initial log lines to print before following")
     start_parser.set_defaults(func=_cmd_start)
 
     stop_parser = subparsers.add_parser("stop", help="stop voice-pet and PicoClaw gateway")
@@ -81,6 +83,10 @@ def _cmd_start(args: argparse.Namespace) -> None:
         _start_gateway(config, paths, env)
     _start_voice(args.config, paths, env)
     _print_status(config, paths)
+    if not args.detach:
+        print("")
+        print(f"following voice-pet logs; press Ctrl+C to stop following, services keep running: {paths.voice_log}")
+        _follow_log(paths.voice_log, args.lines)
 
 
 def _cmd_stop(args: argparse.Namespace) -> None:
@@ -97,7 +103,7 @@ def _cmd_stop(args: argparse.Namespace) -> None:
 
 def _cmd_restart(args: argparse.Namespace) -> None:
     stop_args = argparse.Namespace(config=args.config, env=args.env, no_gateway=False)
-    start_args = argparse.Namespace(config=args.config, env=args.env, no_gateway=False)
+    start_args = argparse.Namespace(config=args.config, env=args.env, no_gateway=False, detach=True, lines=80)
     _cmd_stop(stop_args)
     time.sleep(0.5)
     _cmd_start(start_args)
@@ -116,7 +122,7 @@ def _cmd_logs(args: argparse.Namespace) -> None:
     paths = _runtime_paths(config)
     log_path = paths.voice_log if args.target == "voice" else paths.gateway_log
     if args.follow:
-        subprocess.run(["tail", "-n", str(args.lines), "-f", str(log_path)], check=False)
+        _follow_log(log_path, args.lines)
         return
     subprocess.run(["tail", "-n", str(args.lines), str(log_path)], check=False)
 
@@ -247,6 +253,15 @@ def _spawn_background(cmd: list[str], log_path: Path, env: dict[str, str], cwd: 
         return proc.pid
     finally:
         log_file.close()
+
+
+def _follow_log(log_path: Path, lines: int) -> None:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.touch(exist_ok=True)
+    try:
+        subprocess.run(["tail", "-n", str(lines), "-F", str(log_path)], check=False)
+    except KeyboardInterrupt:
+        print("\nstopped following logs; services keep running")
 
 
 def _print_status(config: dict[str, Any], paths: RuntimePaths) -> None:
