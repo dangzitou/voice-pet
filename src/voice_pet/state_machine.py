@@ -120,7 +120,7 @@ class VoicePetStateMachine:
         self._last_wake_at = time.monotonic()
         print(f"[wake] matched alias={wake.alias}")
         self.play_ack()
-        self._run_wake_session(wake.cleaned_text)
+        self._run_wake_session()
 
     def play_ack(self) -> None:
         if self.ack_audio_path and self.ack_audio_path.is_file():
@@ -158,6 +158,11 @@ class VoicePetStateMachine:
             user_text = self.asr.transcribe_file(str(user_audio)).strip()
             if not user_text:
                 print("[session] empty user text")
+                continue
+            session_wake = self.detector.detect(user_text)
+            if session_wake.matched and not session_wake.cleaned_text:
+                print(f"[session] ignored wakeword text={user_text}")
+                user_text = ""
 
     def _handle_user_text(self, user_text: str) -> None:
         print(f"[think] user={user_text}")
