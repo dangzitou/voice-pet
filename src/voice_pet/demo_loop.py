@@ -25,7 +25,7 @@ def main() -> None:
         raise ValueError("missing MIMO_API_KEY or config mimo.api_key")
 
     timeout = int(runtime.get("request_timeout_seconds", 120))
-    tts = MimoTTS(api_key, mimo["api_base"], mimo["tts_model"], mimo.get("tts_voice", "default_zh"), mimo.get("tts_format", "wav"), timeout)
+    tts = MimoTTS(api_key, mimo["api_base"], mimo["tts_model"], mimo.get("tts_voice", "mimo_default"), mimo.get("tts_format", "wav"), timeout)
     output_path = Path(args.output).expanduser()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_bytes(tts.synthesize(args.text))
