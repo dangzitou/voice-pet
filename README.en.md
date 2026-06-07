@@ -156,10 +156,31 @@ pip install -r requirements.txt
 npm install
 ```
 
-Start the main loop:
+Start the full local system:
 
 ```bash
-cd ~/.picoclaw/voice-pet
+cd /home/zitou/my-project/voice-pet
+./voice-petctl start
+```
+
+Check status, follow logs, and stop:
+
+```bash
+./voice-petctl status
+./voice-petctl logs -f
+./voice-petctl stop
+```
+
+`start` launches both the PicoClaw gateway and voice-pet in the background, loads `~/.picoclaw/voice-pet/voice-pet.env`, and removes local proxy environment variables so localhost gateway traffic is not routed through a proxy. Logs are written to:
+
+```text
+~/.picoclaw/voice-pet/runtime/voice-pet.log
+~/.picoclaw/logs/gateway-voice-pet.log
+```
+
+For debugging, you can still run only the main loop:
+
+```bash
 PYTHONPATH=src python3 -m voice_pet.main --config ~/.picoclaw/voice-pet/config.json
 ```
 

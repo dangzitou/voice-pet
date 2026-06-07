@@ -156,10 +156,31 @@ pip install -r requirements.txt
 npm install
 ```
 
-启动主循环：
+启动完整系统：
 
 ```bash
-cd ~/.picoclaw/voice-pet
+cd /home/zitou/my-project/voice-pet
+./voice-petctl start
+```
+
+查看状态、日志和停止：
+
+```bash
+./voice-petctl status
+./voice-petctl logs -f
+./voice-petctl stop
+```
+
+`start` 会在后台启动 PicoClaw gateway 和 voice-pet，自动加载 `~/.picoclaw/voice-pet/voice-pet.env`，并清掉本机代理环境，避免 localhost gateway 被代理干扰。日志默认写入：
+
+```text
+~/.picoclaw/voice-pet/runtime/voice-pet.log
+~/.picoclaw/logs/gateway-voice-pet.log
+```
+
+调试时也可以只启动主循环：
+
+```bash
 PYTHONPATH=src python3 -m voice_pet.main --config ~/.picoclaw/voice-pet/config.json
 ```
 
