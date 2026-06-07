@@ -6,7 +6,7 @@ import requests
 
 
 class MimoTTS:
-    def __init__(self, api_key: str, api_base: str, model: str, voice: str = "default_zh", fmt: str = "wav", timeout: int = 120):
+    def __init__(self, api_key: str, api_base: str, model: str, voice: str = "mimo_default", fmt: str = "wav", timeout: int = 120):
         self.api_key = api_key
         self.api_base = api_base
         self.model = model
