@@ -14,6 +14,7 @@ English README: [README.en.md](./README.en.md)
 - 支持唤醒词别名匹配：`小爱`、`小艾`、`小ai`、`xiao ai`、`xiaoai`
 - 提供单轮语音交互状态机
 - 预留天气、音乐、设备控制等动作路由接口
+- 可切换为 PicoClaw gateway 作为回复后端
 
 ## 当前状态
 
@@ -34,14 +35,17 @@ English README: [README.en.md](./README.en.md)
 
 ```text
 src/voice_pet/
-├── main.py              # CLI 入口
-├── state_machine.py     # 运行时主循环
-├── audio_capture.py     # 录音与静音截断
-├── wakeword.py          # 唤醒词别名匹配
-├── action_router.py     # 动作路由扩展点
-├── asr/mimo_asr.py      # MiMo ASR 客户端
-├── tts/mimo_tts.py      # MiMo TTS 客户端
-└── brain/direct_llm.py  # MiMo 文本回复客户端
+├── main.py                # CLI 入口
+├── state_machine.py       # 运行时主循环
+├── audio_capture.py       # 录音与静音截断
+├── wakeword.py            # 唤醒词别名匹配
+├── action_router.py       # 动作路由扩展点
+├── mock_mvp.py            # 用 TTS mock 输入的闭环测试
+├── asr/mimo_asr.py        # MiMo ASR 客户端
+├── tts/mimo_tts.py        # MiMo TTS 客户端
+├── brain/direct_llm.py    # 直接调用 MiMo 文本模型
+└── brain/picoclaw.py      # PicoClaw gateway 桥接适配器
+pico_bridge_once.js        # Node WebSocket helper for PicoClaw bridge
 ```
 
 ## 环境要求
@@ -68,6 +72,13 @@ export MIMO_API_KEY="<your-token>"
 
 也可以直接写入 `config.json`，但更推荐使用环境变量。
 
+如果要把 PicoClaw 作为回复后端，还需要在 `config.json` 里设置：
+
+- `runtime.brain = "picoclaw"`
+- `runtime.picoclaw_ws_url`
+- `runtime.picoclaw_token`
+- `runtime.picoclaw_session_id`
+
 ## 运行
 
 启动主循环：
@@ -82,6 +93,13 @@ PYTHONPATH=src python3 -m voice_pet.main --config ~/.picoclaw/voice-pet/config.j
 ```bash
 cd ~/.picoclaw/voice-pet
 PYTHONPATH=src python3 -m voice_pet.demo_loop --config ~/.picoclaw/voice-pet/config.json --text "主人，咋啦"
+```
+
+运行 mock 闭环测试：
+
+```bash
+cd ~/.picoclaw/voice-pet
+PYTHONPATH=src python3 -m voice_pet.mock_mvp --config ~/.picoclaw/voice-pet/config.json --wake-text "小爱小爱" --user-text "你好，请只回复：ok"
 ```
 
 ## 运行流程
