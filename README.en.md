@@ -78,155 +78,312 @@ pico_bridge_once.js            # Node WebSocket helper for PicoClaw bridge
   - `npm install`
 - PicoClaw gateway and Pico channel token
 
-## Configuration
+## Startup Runbook
 
-Copy the example config:
+The commands below assume the repository is at `~/my-project/voice-pet`. If you use a different path, replace that path in the commands. Tokens are shown as placeholders; do not commit real tokens.
+
+### 1. Install System Dependencies
 
 ```bash
-cp ~/.picoclaw/voice-pet/config.example.json ~/.picoclaw/voice-pet/config.json
+cd ~/my-project
+git clone https://github.com/dangzitou/voice-pet.git
+cd voice-pet
+
+python3 --version
+sudo apt update
+sudo apt install -y python3 python3-pip alsa-utils nodejs npm
+
+# Optional: BlueALSA is needed for Bluetooth speaker output.
+sudo apt install -y bluez-alsa-utils libasound2-plugin-bluez
+
+pip install -r requirements.txt
+npm install
 ```
 
-Set the API key via environment variable:
+`python3 --version` should be Python 3.13 or newer. PicoClaw gateway must also be installed or built; at least one of these should work:
 
 ```bash
-export MIMO_API_KEY="<your-token>"
-export PICOCLAW_TOKEN="<your-pico-token>"
+which picoclaw
+ls ../picoclaw/build/picoclaw
 ```
 
-You can also place the key in `config.json`. If both are configured, environment variables override `config.json`.
+### 2. Install the `voice-pet` Command
 
-You can also use the configuration CLI to create, inspect, and update voice model settings:
+The repository's `voice-pet` script sets `PYTHONPATH` automatically and can be run directly:
 
 ```bash
-voice-pet config init --config ./config.json
-voice-pet config show --config ./config.json
-voice-pet config set --config ./config.json \
+./voice-pet --help
+```
+
+To run `voice-pet start` from any directory, create a user-level symlink:
+
+```bash
+mkdir -p ~/.local/bin
+ln -sf "$(pwd)/voice-pet" ~/.local/bin/voice-pet
+export PATH="$HOME/.local/bin:$PATH"
+voice-pet --help
+```
+
+To make this permanent, add `export PATH="$HOME/.local/bin:$PATH"` to `~/.bashrc` or your shell startup file.
+
+### 3. Create Config and Env Files
+
+The default config path is `~/.picoclaw/voice-pet/config.json`; the default env file is `~/.picoclaw/voice-pet/voice-pet.env`. `voice-pet start/status/logs` load this env file automatically.
+
+```bash
+mkdir -p ~/.picoclaw/voice-pet ~/.picoclaw/logs
+voice-pet config init --config ~/.picoclaw/voice-pet/config.json
+
+cat > ~/.picoclaw/voice-pet/voice-pet.env <<'EOF'
+MIMO_API_KEY=<your-mimo-api-key>
+PICOCLAW_TOKEN=<your-picoclaw-token>
+EOF
+chmod 600 ~/.picoclaw/voice-pet/voice-pet.env
+```
+
+`MIMO_API_KEY` is the MiMo model key. `PICOCLAW_TOKEN` is the Pico channel token used to connect to PicoClaw gateway. Keep them in the env file instead of Git.
+
+### 4. Configure Models, Reply Core, and Voice
+
+```bash
+voice-pet config set \
   --base-url https://token-plan-cn.xiaomimimo.com/v1 \
-  --api-key "<your-mimo-token>" \
   --model-name mimo-v2.5 \
   --asr-model-name mimo-v2.5-asr \
   --tts-model-name mimo-v2.5-tts \
-  --tts-voice mimo_default \
+  --tts-voice 冰糖 \
+  --tts-format wav \
+  --tts-style-prompt "请用少女感、可爱、年轻一点的中文语气来读，声音自然，像亲近主人的桌宠，语速轻快一点，但不要夸张做作。" \
   --language zh \
-  --playback-command aplay \
   --brain picoclaw \
   --picoclaw-ws-url ws://127.0.0.1:18790/pico/ws \
-  --picoclaw-session-id voice-pet
+  --picoclaw-session-id voice-pet \
+  --picoclaw-node-script "$(pwd)/pico_bridge_once.js" \
+  --spoken-reply-first-sentence
 ```
 
-Supported voice model fields are: `--api-key`, `--clear-api-key`, `--api-base` / `--base-url`, `--model` / `--llm-model` / `--model-name`, `--asr-model` / `--asr-model-name`, `--tts-model` / `--tts-model-name`, `--tts-voice`, `--tts-format`, and `--language`. Audio playback can be configured with `--playback-command` and `--playback-device`. `show` only prints whether the API key is configured; it does not print the key.
+Common fields:
 
-To pin playback to a BlueALSA Bluetooth speaker, for example BT501:
+| Option | Purpose |
+| --- | --- |
+| `--base-url` | MiMo OpenAI-compatible endpoint |
+| `--model-name` | text reply model, used by the `direct_llm` debug backend |
+| `--asr-model-name` | MiMo ASR model |
+| `--tts-model-name` | MiMo TTS model |
+| `--tts-voice` | preset TTS voice, for example `冰糖`, `茉莉`, or `mimo_default` |
+| `--tts-style-prompt` | TTS style instruction |
+| `--brain picoclaw` | use PicoClaw as the reply core |
+| `--picoclaw-ws-url` | PicoClaw gateway WebSocket URL |
+| `--spoken-reply-first-sentence` | speak only the first useful sentence to reduce latency and playback time |
+
+### 5. Configure PicoClaw Gateway Startup
+
+The recommended path is `voice-pet start`. It checks gateway health first; if the gateway is already available, it reuses it. Otherwise, it tries to start `picoclaw gateway -E --host 127.0.0.1`. Command resolution checks `picoclaw` in `PATH` first, then falls back to `../picoclaw/build/picoclaw` next to this repository.
+
+If you need custom gateway arguments:
 
 ```bash
-voice-pet config set --config ./config.json \
-  --playback-command aplay \
-  --playback-device "bluealsa:DEV=D6:BF:DF:4A:EF:E2,PROFILE=a2dp,VOL=100+"
+voice-pet config set \
+  --picoclaw-gateway-command picoclaw \
+  --picoclaw-gateway-args "gateway" \
+  --picoclaw-gateway-ready-url http://127.0.0.1:18790/ready
 ```
 
-To prebuild the `主人，咋啦` wake acknowledgement, synthesize it once and then save the path in config:
+If PicoClaw gateway is managed by another service, start with:
 
 ```bash
-voice-pet demo --config ./config.json \
-  --text "主人，咋啦" \
-  --output ~/.picoclaw/voice-pet/runtime/ack.wav
-voice-pet config set --config ./config.json \
-  --ack-text "主人，咋啦" \
-  --ack-audio-path ~/.picoclaw/voice-pet/runtime/ack.wav
+voice-pet start --no-gateway
 ```
 
-When `wakeword.ack_audio_path` is configured, wake acknowledgement directly plays that file. If the file is missing, it falls back to TTS synthesis from `wakeword.ack_text`.
-
-To let `voice-pet` start PicoClaw gateway:
+If you debug only the `python3 -m voice_pet.main` loop instead of `voice-pet start`, enable gateway management inside the main loop:
 
 ```bash
-voice-pet config set --config ./config.json \
+voice-pet config set \
   --manage-picoclaw-gateway \
   --picoclaw-gateway-command picoclaw \
   --picoclaw-gateway-args "gateway" \
   --picoclaw-gateway-ready-url http://127.0.0.1:18790/ready
 ```
 
-By default, `voice-pet` connects to an already-running gateway. The PicoClaw token is not written by the CLI; keep using the `PICOCLAW_TOKEN` environment variable.
+### 6. Configure Microphone and Speaker
 
-The default listener is local streaming mode:
-
-- `audio.listen_mode = "streaming"`: continuously reads microphone audio and calls ASR only after speech is detected
-- `audio.listen_mode = "fixed_window"`: switches back to the previous fixed-window recording mode for microphone or threshold debugging
-- `audio.voice_start_threshold` / `audio.silence_threshold`: control speech start and silence cutoff thresholds
-- `audio.stream_chunk_ms` / `audio.pre_roll_seconds`: control streaming chunk size and preserved pre-trigger audio
-- `wakeword.session_timeout_seconds = 60.0`: leave wake mode after 60 seconds without processable new speech
-- `wakeword.ack_audio_path`: prebuilt wake acknowledgement audio path, played directly when configured
-- Follow-up speech inside wake mode must also start with the `小爱` prefix; speech without the prefix is treated as noise and is not forwarded to PicoClaw
-
-## Run
-
-Install dependencies:
+Confirm the system can see capture and playback devices:
 
 ```bash
-pip install -r requirements.txt
-npm install
+arecord -l
+aplay -l
+aplay -L | sed -n '1,120p'
 ```
 
-Start the full local system:
+Test the microphone and default speaker:
 
 ```bash
-cd /home/zitou/my-project/voice-pet
+arecord -D default -f S16_LE -r 16000 -c 1 -d 3 /tmp/voice-pet-mic.wav
+aplay /tmp/voice-pet-mic.wav
+```
+
+If the microphone is not the default device, use the device shown by `arecord -l`, for example:
+
+```bash
+voice-pet config set \
+  --record-device "plughw:CARD=Microphone,DEV=0" \
+  --voice-start-threshold 850 \
+  --silence-threshold 720 \
+  --silence-seconds 0.8
+```
+
+For normal ALSA default output:
+
+```bash
+voice-pet config set \
+  --playback-command aplay \
+  --playback-device ""
+```
+
+For a BlueALSA Bluetooth speaker such as BT501:
+
+```bash
+bluetoothctl
+# Inside bluetoothctl:
+# scan on
+# pair <BT_MAC>
+# trust <BT_MAC>
+# connect <BT_MAC>
+# quit
+
+aplay -L | grep -i bluealsa
+voice-pet config set \
+  --playback-command aplay \
+  --playback-device "bluealsa:DEV=<BT_MAC>,PROFILE=a2dp,VOL=100+"
+```
+
+### 7. Prebuild the Wake Acknowledgement
+
+Prebuilding `主人，咋啦` avoids doing TTS at wake time and makes wake acknowledgement faster.
+
+```bash
+mkdir -p ~/.picoclaw/voice-pet/runtime
+voice-pet demo \
+  --text "主人，咋啦" \
+  --output ~/.picoclaw/voice-pet/runtime/ack.wav
+
+voice-pet config set \
+  --ack-text "主人，咋啦" \
+  --ack-audio-path ~/.picoclaw/voice-pet/runtime/ack.wav
+
+aplay ~/.picoclaw/voice-pet/runtime/ack.wav
+```
+
+Optional random wake acknowledgements and thinking prompts:
+
+```bash
+voice-pet config set \
+  --ack-text-variant "主人，我在。" \
+  --ack-text-variant "主人，我在呀。" \
+  --thinking-prompt-delay 3 \
+  --thinking-prompt-text "主人，我正在想，马上就好。" \
+  --thinking-prompt-text "主人，稍等一下，我还在组织回复。"
+```
+
+### 8. Run Preflight Checks
+
+Offline loop without MiMo/PicoClaw:
+
+```bash
+voice-pet mock --offline --wake-text "小爱小爱" --user-text "小爱今天厦门天气咋样"
+```
+
+Real MiMo/PicoClaw loop:
+
+```bash
+voice-pet mock --wake-text "小爱小爱" --user-text "小爱你好，请只回复：ok"
+```
+
+Show final config. `show` only prints whether keys are set; it never prints real keys:
+
+```bash
+voice-pet config show
+```
+
+### 9. Start the Full System
+
+`voice-pet start` launches PicoClaw gateway and the voice-pet runtime in the background. If the gateway is already healthy, it reuses it. Startup loads `~/.picoclaw/voice-pet/voice-pet.env` and strips local proxy env vars so localhost gateway traffic is not routed through a proxy.
+
+```bash
 voice-pet start
+voice-pet status
 ```
 
-Check status, follow logs, and stop:
+If PicoClaw gateway is already managed elsewhere, start only the voice runtime:
+
+```bash
+voice-pet start --no-gateway
+```
+
+Common commands:
 
 | Command | Purpose |
 | --- | --- |
 | `voice-pet start` | Start PicoClaw gateway and voice-pet in the background |
+| `voice-pet start --no-gateway` | Start only voice-pet and connect to an existing gateway |
 | `voice-pet stop` | Stop voice-pet and PicoClaw gateway |
+| `voice-pet stop --no-gateway` | Stop only voice-pet |
 | `voice-pet restart` | Restart the full voice runtime |
 | `voice-pet status` | Show gateway/voice-pet process and health status |
 | `voice-pet logs -f` | Follow voice-pet logs |
 | `voice-pet logs --target gateway -f` | Follow PicoClaw gateway logs |
 | `voice-pet config show` | Show current model, audio, and runtime configuration |
-| `voice-pet config set --tts-voice 冰糖` | Update config, example switches TTS voice |
-| `voice-pet mock --offline --wake-text "小爱小爱" --user-text "小爱今天厦门天气咋样"` | Run the offline mock end-to-end test |
 | `voice-pet demo --text "主人，咋啦"` | Run a MiMo TTS/ASR debug demo |
+| `voice-pet mock --offline --wake-text "小爱小爱" --user-text "小爱今天厦门天气咋样"` | Run the offline mock end-to-end test |
 
-Most common status, log, and stop commands:
-
-```bash
-voice-pet status
-voice-pet logs -f
-voice-pet stop
-```
-
-`start` launches both the PicoClaw gateway and voice-pet in the background, loads `~/.picoclaw/voice-pet/voice-pet.env`, and removes local proxy environment variables so localhost gateway traffic is not routed through a proxy. Logs are written to:
+Default logs:
 
 ```text
 ~/.picoclaw/voice-pet/runtime/voice-pet.log
 ~/.picoclaw/logs/gateway-voice-pet.log
 ```
 
-For debugging, you can still run only the main loop:
+### 10. Test With Real Speech
+
+After startup, test in this order:
+
+1. Say `小爱小爱`
+2. You should hear the prebuilt `主人，咋啦`
+3. Say `小爱今天厦门天气咋样`
+4. After PicoClaw replies, voice-pet synthesizes the answer with MiMo TTS and plays it through the speaker
+
+Follow-up speech inside wake mode must also start with `小爱`. Speech without the prefix is logged as `ignored non-prefixed speech=...` and is not forwarded to PicoClaw. Wake mode exits after 60 seconds without processable speech.
+
+### 11. Troubleshooting
+
+| Symptom | Check |
+| --- | --- |
+| `voice-pet` command not found | Ensure `~/.local/bin` is in `PATH`, or run `./voice-pet` inside the repo |
+| gateway is unhealthy | Run `voice-pet logs --target gateway -f`; verify `picoclaw gateway -E --host 127.0.0.1` starts |
+| `PICOCLAW_TOKEN` or `MIMO_API_KEY` is missing | Check `~/.picoclaw/voice-pet/voice-pet.env`, then run `voice-pet config show` |
+| microphone captures nothing | Run `arecord -l` and `arecord -D <device> ...`, then set `--record-device` |
+| false triggers or missed speech | Tune `--voice-start-threshold`, `--silence-threshold`, and `--silence-seconds` |
+| no playback | Run `aplay -l` and `aplay -L`; ensure `--playback-device` works with `aplay -D` |
+| Bluetooth cannot connect | First verify `bluetoothctl connect <BT_MAC>` and `aplay -L | grep -i bluealsa` at the system level |
+| replies are too long or slow | Use `--spoken-reply-first-sentence` and keep the PicoClaw reply prompt concise |
+
+### 12. Optional: systemd User Service
+
+The repository includes `voice-pet.service`. It assumes the code is installed at `~/.picoclaw/voice-pet`; if your repo is elsewhere, edit `WorkingDirectory` and `PYTHONPATH` first.
 
 ```bash
-PYTHONPATH=src python3 -m voice_pet.main --config ~/.picoclaw/voice-pet/config.json
+mkdir -p ~/.config/systemd/user
+cp voice-pet.service ~/.config/systemd/user/voice-pet.service
+systemctl --user daemon-reload
+systemctl --user enable voice-pet
+systemctl --user start voice-pet
+systemctl --user status voice-pet
 ```
 
-Run the TTS / ASR demo:
+Debug systemd logs:
 
 ```bash
-voice-pet demo --text "主人，咋啦"
-```
-
-Run the mock end-to-end test:
-
-```bash
-voice-pet mock --wake-text "小爱小爱" --user-text "小爱你好，请只回复：ok"
-```
-
-Run the offline mock without MiMo/PicoClaw credentials:
-
-```bash
-voice-pet mock --offline --wake-text "小爱小爱" --user-text "小爱今天天气怎么样"
+journalctl --user -u voice-pet -f
 ```
 
 ## Runtime Flow

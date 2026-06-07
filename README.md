@@ -78,101 +78,246 @@ pico_bridge_once.js            # Node WebSocket helper for PicoClaw bridge
   - `npm install`
 - PicoClaw gateway 和 Pico channel token
 
-## 配置
+## 启动流程（从零复现）
 
-复制示例配置：
+下面的流程假设仓库放在 `~/my-project/voice-pet`。如果路径不同，把命令里的路径替换成你的实际路径即可。所有 token 都用占位符表示，不要把真实 token 提交到仓库。
+
+### 1. 准备系统依赖
 
 ```bash
-cp ~/.picoclaw/voice-pet/config.example.json ~/.picoclaw/voice-pet/config.json
+cd ~/my-project
+git clone https://github.com/dangzitou/voice-pet.git
+cd voice-pet
+
+python3 --version
+sudo apt update
+sudo apt install -y python3 python3-pip alsa-utils nodejs npm
+
+# 可选：蓝牙音箱输出需要 BlueALSA
+sudo apt install -y bluez-alsa-utils libasound2-plugin-bluez
+
+pip install -r requirements.txt
+npm install
 ```
 
-通过环境变量设置 API key：
+`python3 --version` 需要是 Python 3.13 或更新版本。PicoClaw gateway 也需要提前安装或编译好，确保下面至少一个命令能找到：
 
 ```bash
-export MIMO_API_KEY="<your-token>"
-export PICOCLAW_TOKEN="<your-pico-token>"
+which picoclaw
+ls ../picoclaw/build/picoclaw
 ```
 
-也可以直接写入 `config.json`。如果同时配置了环境变量，环境变量会覆盖 `config.json` 里的值。
+### 2. 安装 `voice-pet` 命令
 
-也可以用配置 CLI 创建、查看和修改语音模型配置：
+仓库里的 `voice-pet` 脚本会自动设置 `PYTHONPATH`，可以直接使用：
 
 ```bash
-voice-pet config init --config ./config.json
-voice-pet config show --config ./config.json
-voice-pet config set --config ./config.json \
+./voice-pet --help
+```
+
+为了任何目录都能执行 `voice-pet start`，建议创建用户级软链接：
+
+```bash
+mkdir -p ~/.local/bin
+ln -sf "$(pwd)/voice-pet" ~/.local/bin/voice-pet
+export PATH="$HOME/.local/bin:$PATH"
+voice-pet --help
+```
+
+如果你希望永久生效，把 `export PATH="$HOME/.local/bin:$PATH"` 加到 `~/.bashrc` 或当前 shell 的启动文件里。
+
+### 3. 创建配置和密钥 env 文件
+
+默认配置路径是 `~/.picoclaw/voice-pet/config.json`，默认 env 文件是 `~/.picoclaw/voice-pet/voice-pet.env`。`voice-pet start/status/logs` 会自动加载这个 env 文件。
+
+```bash
+mkdir -p ~/.picoclaw/voice-pet ~/.picoclaw/logs
+voice-pet config init --config ~/.picoclaw/voice-pet/config.json
+
+cat > ~/.picoclaw/voice-pet/voice-pet.env <<'EOF'
+MIMO_API_KEY=<your-mimo-api-key>
+PICOCLAW_TOKEN=<your-picoclaw-token>
+EOF
+chmod 600 ~/.picoclaw/voice-pet/voice-pet.env
+```
+
+`MIMO_API_KEY` 是 MiMo 模型调用 key；`PICOCLAW_TOKEN` 是连接 PicoClaw gateway 的 Pico channel token。建议放在 env 文件，不要写进 Git。
+
+### 4. 配置模型、回复核心和音色
+
+```bash
+voice-pet config set \
   --base-url https://token-plan-cn.xiaomimimo.com/v1 \
-  --api-key "<your-mimo-token>" \
   --model-name mimo-v2.5 \
   --asr-model-name mimo-v2.5-asr \
   --tts-model-name mimo-v2.5-tts \
-  --tts-voice mimo_default \
+  --tts-voice 冰糖 \
+  --tts-format wav \
+  --tts-style-prompt "请用少女感、可爱、年轻一点的中文语气来读，声音自然，像亲近主人的桌宠，语速轻快一点，但不要夸张做作。" \
   --language zh \
-  --playback-command aplay \
   --brain picoclaw \
   --picoclaw-ws-url ws://127.0.0.1:18790/pico/ws \
-  --picoclaw-session-id voice-pet
+  --picoclaw-session-id voice-pet \
+  --picoclaw-node-script "$(pwd)/pico_bridge_once.js" \
+  --spoken-reply-first-sentence
 ```
 
-支持修改的语音模型字段包括：`--api-key`、`--clear-api-key`、`--api-base` / `--base-url`、`--model` / `--llm-model` / `--model-name`、`--asr-model` / `--asr-model-name`、`--tts-model` / `--tts-model-name`、`--tts-voice`、`--tts-format`、`--language`。音频播放可以用 `--playback-command` 和 `--playback-device` 配置；`show` 只会显示 API key 是否已配置，不会把 key 打印出来。
+常用可配置字段：
 
-如果要固定输出到 BlueALSA 蓝牙音箱，例如 BT501：
+| 命令参数 | 作用 |
+| --- | --- |
+| `--base-url` | MiMo OpenAI-compatible endpoint |
+| `--model-name` | 文本回复模型名，调试 `direct_llm` 时使用 |
+| `--asr-model-name` | MiMo ASR 模型名 |
+| `--tts-model-name` | MiMo TTS 模型名 |
+| `--tts-voice` | TTS 预置音色，例如 `冰糖`、`茉莉`、`mimo_default` |
+| `--tts-style-prompt` | TTS 风格描述 |
+| `--brain picoclaw` | 使用 PicoClaw 作为回复核心 |
+| `--picoclaw-ws-url` | PicoClaw gateway WebSocket 地址 |
+| `--spoken-reply-first-sentence` | 只口播第一句可用回复，降低等待和播报时长 |
+
+### 5. 配置 PicoClaw gateway 启动方式
+
+推荐使用 `voice-pet start` 启动完整系统。它会先检查 gateway health；如果 gateway 已经可用就复用，否则尝试启动 `picoclaw gateway -E --host 127.0.0.1`。命令查找顺序是 `PATH` 里的 `picoclaw`，找不到时再尝试仓库同级目录的 `../picoclaw/build/picoclaw`。
+
+如果 gateway 参数需要自定义：
 
 ```bash
-voice-pet config set --config ./config.json \
-  --playback-command aplay \
-  --playback-device "bluealsa:DEV=D6:BF:DF:4A:EF:E2,PROFILE=a2dp,VOL=100+"
+voice-pet config set \
+  --picoclaw-gateway-command picoclaw \
+  --picoclaw-gateway-args "gateway" \
+  --picoclaw-gateway-ready-url http://127.0.0.1:18790/ready
 ```
 
-如果要把“主人，咋啦”预制成音频，先用 TTS demo 生成一次，再把路径写入配置：
+如果 PicoClaw gateway 已经由别的服务管理，启动时使用：
 
 ```bash
-voice-pet demo --config ./config.json \
-  --text "主人，咋啦" \
-  --output ~/.picoclaw/voice-pet/runtime/ack.wav
-voice-pet config set --config ./config.json \
-  --ack-text "主人，咋啦" \
-  --ack-audio-path ~/.picoclaw/voice-pet/runtime/ack.wav
+voice-pet start --no-gateway
 ```
 
-配置了 `wakeword.ack_audio_path` 后，唤醒确认会直接播放这个音频文件；文件不存在时回退到 `wakeword.ack_text` 的 TTS 合成。
-
-如果希望由 `voice-pet` 启动 PicoClaw gateway：
+如果只调试 `python3 -m voice_pet.main` 主循环，而不是 `voice-pet start`，才需要让主循环自己管理 gateway：
 
 ```bash
-voice-pet config set --config ./config.json \
+voice-pet config set \
   --manage-picoclaw-gateway \
   --picoclaw-gateway-command picoclaw \
   --picoclaw-gateway-args "gateway" \
   --picoclaw-gateway-ready-url http://127.0.0.1:18790/ready
 ```
 
-默认是连接已经运行的 gateway。PicoClaw token 不通过 CLI 写入配置，继续用 `PICOCLAW_TOKEN` 环境变量。
+### 6. 配置麦克风和扬声器
 
-默认使用本地流式监听：
-
-- `audio.listen_mode = "streaming"`：持续读取麦克风音频，只在检测到一段语音后调用 ASR 确认唤醒词
-- `audio.listen_mode = "fixed_window"`：切回旧的固定窗口录音模式，便于排查阈值或麦克风问题
-- `audio.voice_start_threshold` / `audio.silence_threshold`：控制语音开始和静音结束阈值
-- `audio.stream_chunk_ms` / `audio.pre_roll_seconds`：控制流式读取块大小和触发前保留音频
-- `wakeword.session_timeout_seconds = 60.0`：唤醒后 60 秒没有可处理的新语音就退出唤醒态
-- `wakeword.ack_audio_path`：预制唤醒确认音频路径，配置后优先直接播放
-- 唤醒态里的后续对话也必须以 `小爱` 前缀开头；不带前缀的语音会当作杂音忽略，不转发给 PicoClaw
-
-## 运行
-
-安装依赖：
+先确认系统能看到录音和播放设备：
 
 ```bash
-pip install -r requirements.txt
-npm install
+arecord -l
+aplay -l
+aplay -L | sed -n '1,120p'
 ```
 
-启动完整系统：
+测试麦克风和默认扬声器：
 
 ```bash
-cd /home/zitou/my-project/voice-pet
+arecord -D default -f S16_LE -r 16000 -c 1 -d 3 /tmp/voice-pet-mic.wav
+aplay /tmp/voice-pet-mic.wav
+```
+
+如果麦克风不是默认设备，用 `arecord -l` 里看到的设备配置，例如：
+
+```bash
+voice-pet config set \
+  --record-device "plughw:CARD=Microphone,DEV=0" \
+  --voice-start-threshold 850 \
+  --silence-threshold 720 \
+  --silence-seconds 0.8
+```
+
+如果使用普通 ALSA 默认输出：
+
+```bash
+voice-pet config set \
+  --playback-command aplay \
+  --playback-device ""
+```
+
+如果使用 BlueALSA 蓝牙音箱，例如 BT501：
+
+```bash
+bluetoothctl
+# bluetoothctl 里执行：
+# scan on
+# pair <BT_MAC>
+# trust <BT_MAC>
+# connect <BT_MAC>
+# quit
+
+aplay -L | grep -i bluealsa
+voice-pet config set \
+  --playback-command aplay \
+  --playback-device "bluealsa:DEV=<BT_MAC>,PROFILE=a2dp,VOL=100+"
+```
+
+### 7. 预制唤醒确认音频
+
+预制 `主人，咋啦` 可以避免每次唤醒都临时 TTS，响应会更快。
+
+```bash
+mkdir -p ~/.picoclaw/voice-pet/runtime
+voice-pet demo \
+  --text "主人，咋啦" \
+  --output ~/.picoclaw/voice-pet/runtime/ack.wav
+
+voice-pet config set \
+  --ack-text "主人，咋啦" \
+  --ack-audio-path ~/.picoclaw/voice-pet/runtime/ack.wav
+
+aplay ~/.picoclaw/voice-pet/runtime/ack.wav
+```
+
+也可以配置多条随机唤醒确认和等待提示：
+
+```bash
+voice-pet config set \
+  --ack-text-variant "主人，我在。" \
+  --ack-text-variant "主人，我在呀。" \
+  --thinking-prompt-delay 3 \
+  --thinking-prompt-text "主人，我正在想，马上就好。" \
+  --thinking-prompt-text "主人，稍等一下，我还在组织回复。"
+```
+
+### 8. 跑启动前验证
+
+不依赖 MiMo/PicoClaw 的离线闭环：
+
+```bash
+voice-pet mock --offline --wake-text "小爱小爱" --user-text "小爱今天厦门天气咋样"
+```
+
+依赖真实 MiMo/PicoClaw 的闭环：
+
+```bash
+voice-pet mock --wake-text "小爱小爱" --user-text "小爱你好，请只回复：ok"
+```
+
+查看最终配置。`show` 只会显示 key 是否已设置，不会打印真实 key：
+
+```bash
+voice-pet config show
+```
+
+### 9. 启动完整系统
+
+`voice-pet start` 会在后台启动 PicoClaw gateway 和 voice-pet runtime；如果 gateway 已经健康运行，它会复用已有 gateway。启动时会加载 `~/.picoclaw/voice-pet/voice-pet.env`，并清掉本机代理环境，避免 localhost gateway 请求被代理干扰。
+
+```bash
 voice-pet start
+voice-pet status
+```
+
+如果你已经用别的方式启动 PicoClaw gateway，只启动语音 runtime：
+
+```bash
+voice-pet start --no-gateway
 ```
 
 常用命令：
@@ -180,53 +325,65 @@ voice-pet start
 | 命令 | 用途 |
 | --- | --- |
 | `voice-pet start` | 后台启动 PicoClaw gateway 和 voice-pet |
+| `voice-pet start --no-gateway` | 只启动 voice-pet，连接已有 gateway |
 | `voice-pet stop` | 停止 voice-pet 和 PicoClaw gateway |
+| `voice-pet stop --no-gateway` | 只停止 voice-pet |
 | `voice-pet restart` | 重启完整语音 runtime |
 | `voice-pet status` | 查看 gateway/voice-pet 进程和健康状态 |
 | `voice-pet logs -f` | 实时查看 voice-pet 日志 |
 | `voice-pet logs --target gateway -f` | 实时查看 PicoClaw gateway 日志 |
 | `voice-pet config show` | 查看当前模型、音频和 runtime 配置 |
-| `voice-pet config set --tts-voice 冰糖` | 修改配置，示例为切换 TTS 音色 |
-| `voice-pet mock --offline --wake-text "小爱小爱" --user-text "小爱今天厦门天气咋样"` | 跑离线 mock 闭环测试 |
 | `voice-pet demo --text "主人，咋啦"` | 跑一次 MiMo TTS/ASR 调试 demo |
+| `voice-pet mock --offline --wake-text "小爱小爱" --user-text "小爱今天厦门天气咋样"` | 跑离线 mock 闭环测试 |
 
-最常用的状态、日志和停止：
-
-```bash
-voice-pet status
-voice-pet logs -f
-voice-pet stop
-```
-
-`start` 会在后台启动 PicoClaw gateway 和 voice-pet，自动加载 `~/.picoclaw/voice-pet/voice-pet.env`，并清掉本机代理环境，避免 localhost gateway 被代理干扰。日志默认写入：
+日志默认写入：
 
 ```text
 ~/.picoclaw/voice-pet/runtime/voice-pet.log
 ~/.picoclaw/logs/gateway-voice-pet.log
 ```
 
-调试时也可以只启动主循环：
+### 10. 真实语音测试
+
+启动后按这个顺序测试：
+
+1. 说 `小爱小爱`
+2. 听到预制音频 `主人，咋啦`
+3. 继续说 `小爱今天厦门天气咋样`
+4. 等 PicoClaw 返回后，voice-pet 会用 MiMo TTS 合成并通过扬声器播放
+
+唤醒态里的后续对话也必须以 `小爱` 开头。不带前缀的语音会记录为 `ignored non-prefixed speech=...`，不会转发给 PicoClaw。60 秒没有可处理语音会退出唤醒态。
+
+### 11. 常见排障
+
+| 现象 | 检查 |
+| --- | --- |
+| `voice-pet` 命令找不到 | 确认 `~/.local/bin` 在 `PATH`，或在仓库内使用 `./voice-pet` |
+| gateway 不健康 | 跑 `voice-pet logs --target gateway -f`，确认 `picoclaw gateway -E --host 127.0.0.1` 能启动 |
+| `PICOCLAW_TOKEN` 或 `MIMO_API_KEY` 未设置 | 检查 `~/.picoclaw/voice-pet/voice-pet.env`，再跑 `voice-pet config show` |
+| 没有录到声音 | 跑 `arecord -l` 和 `arecord -D <device> ...`，再调整 `--record-device` |
+| 误触发或不触发 | 调整 `--voice-start-threshold`、`--silence-threshold`、`--silence-seconds` |
+| 没有播放声音 | 跑 `aplay -l`、`aplay -L`，确认 `--playback-device` 能被 `aplay -D` 使用 |
+| 蓝牙连接失败 | 先用 `bluetoothctl connect <BT_MAC>` 和 `aplay -L | grep -i bluealsa` 确认系统层可用 |
+| 回复太长或太慢 | 使用 `--spoken-reply-first-sentence`，并保持 PicoClaw 回复 prompt 简短 |
+
+### 12. 可选：systemd 用户服务
+
+仓库里有 `voice-pet.service` 示例。它默认假设代码安装在 `~/.picoclaw/voice-pet`；如果你的仓库在别的路径，先修改 service 里的 `WorkingDirectory` 和 `PYTHONPATH`。
 
 ```bash
-PYTHONPATH=src python3 -m voice_pet.main --config ~/.picoclaw/voice-pet/config.json
+mkdir -p ~/.config/systemd/user
+cp voice-pet.service ~/.config/systemd/user/voice-pet.service
+systemctl --user daemon-reload
+systemctl --user enable voice-pet
+systemctl --user start voice-pet
+systemctl --user status voice-pet
 ```
 
-运行 TTS / ASR 演示：
+调试 systemd 日志：
 
 ```bash
-voice-pet demo --text "主人，咋啦"
-```
-
-运行 mock 闭环测试：
-
-```bash
-voice-pet mock --wake-text "小爱小爱" --user-text "小爱你好，请只回复：ok"
-```
-
-不依赖 MiMo/PicoClaw 的离线 mock：
-
-```bash
-voice-pet mock --offline --wake-text "小爱小爱" --user-text "小爱今天天气怎么样"
+journalctl --user -u voice-pet -f
 ```
 
 ## 运行流程
