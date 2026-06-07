@@ -7,6 +7,7 @@ from .action_router import build_default_router
 from .audio_capture import AudioCapture
 from .asr.mimo_asr import MimoASR
 from .brain.direct_llm import DirectLLMAdapter
+from .brain.picoclaw import PicoBridgeConfig, PicoClawAdapter
 from .player import AudioPlayer
 from .tts.mimo_tts import MimoTTS
 from .wakeword import WakewordDetector
@@ -35,8 +36,19 @@ class VoicePetStateMachine:
         )
         timeout = int(runtime.get("request_timeout_seconds", 120))
         self.asr = MimoASR(api_key, mimo["api_base"], mimo["asr_model"], mimo.get("language", "zh"), timeout)
-        self.tts = MimoTTS(api_key, mimo["api_base"], mimo["tts_model"], mimo.get("tts_voice", "default_zh"), mimo.get("tts_format", "wav"), timeout)
-        self.brain = DirectLLMAdapter(api_key, mimo["api_base"], mimo["llm_model"], timeout)
+        self.tts = MimoTTS(api_key, mimo["api_base"], mimo["tts_model"], mimo.get("tts_voice", "mimo_default"), mimo.get("tts_format", "wav"), timeout)
+        brain_kind = str(runtime.get("brain", "direct_llm")).strip().lower()
+        if brain_kind == "picoclaw":
+            self.brain = PicoClawAdapter(
+                PicoBridgeConfig(
+                    url=runtime["picoclaw_ws_url"],
+                    token=runtime["picoclaw_token"],
+                    session_id=runtime.get("picoclaw_session_id", "voice-pet"),
+                    timeout_seconds=float(runtime.get("request_timeout_seconds", 120)),
+                )
+            )
+        else:
+            self.brain = DirectLLMAdapter(api_key, mimo["api_base"], mimo["llm_model"], timeout)
         self.player = AudioPlayer()
         self.router = build_default_router()
         self.detector = WakewordDetector(wakeword.get("aliases", []))
