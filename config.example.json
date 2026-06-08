@@ -66,6 +66,21 @@
       "主人，我还在思考，再等我一小会儿。"
     ]
   },
+  "music": {
+    "pause_prompt_texts": [
+      "已经暂停啦，主人。",
+      "暂停好啦，主人。",
+      "好哒，已经帮你暂停啦。",
+      "主人，音乐先暂停啦。",
+      "收到，已经暂停播放啦。",
+      "暂停啦，主人你说。",
+      "好，先暂停啦。",
+      "已经先停下啦，主人。",
+      "音乐暂停啦，主人。",
+      "好啦主人，已经暂停。"
+    ],
+    "pause_prompt_audio_paths": []
+  },
   "runtime": {
     "work_dir": "~/.picoclaw/voice-pet/runtime",
     "poll_interval_seconds": 0.2,

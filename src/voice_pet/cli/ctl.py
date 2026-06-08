@@ -84,7 +84,7 @@ def _cmd_start(args: argparse.Namespace) -> None:
     _load_env_file_into_process(env_path)
     config = load_config(args.config)
     paths = _runtime_paths(config)
-    env = _child_env(paths.repo_root, env_path)
+    env = _child_env(paths.repo_root, env_path, paths.work_dir)
 
     if not args.no_gateway:
         _start_gateway(config, paths, env)
@@ -139,7 +139,7 @@ def _cmd_mic_test(args: argparse.Namespace) -> None:
     _load_env_file_into_process(env_path)
     config = load_config(args.config)
     paths = _runtime_paths(config)
-    env = _child_env(paths.repo_root, env_path)
+    env = _child_env(paths.repo_root, env_path, paths.work_dir)
 
     voice_pids = _unique_pids(_pid_from_file(paths.voice_pid), *_find_voice_pids())
     restart_voice = bool(voice_pids)
@@ -352,7 +352,7 @@ def _load_env_file_into_process(path: Path) -> None:
             os.environ[key] = value
 
 
-def _child_env(repo_root: Path, env_path: Path) -> dict[str, str]:
+def _child_env(repo_root: Path, env_path: Path, work_dir: Path | None = None) -> dict[str, str]:
     env = os.environ.copy()
     _load_env_file_into_mapping(env_path, env)
     for key in PROXY_ENV_KEYS:
@@ -361,6 +361,8 @@ def _child_env(repo_root: Path, env_path: Path) -> dict[str, str]:
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = src_path if not existing else f"{src_path}:{existing}"
     env["PYTHONUNBUFFERED"] = "1"
+    resolved_work_dir = work_dir or Path("~/.picoclaw/voice-pet/runtime").expanduser()
+    env.setdefault("VOICE_PET_EXTERNAL_AUDIO_DEFER_FILE", str(resolved_work_dir / "external-audio-defer.json"))
     return env
 
 
@@ -482,7 +484,7 @@ def _run_tool_module(module: str, args: argparse.Namespace) -> None:
     env_path = Path(args.env).expanduser()
     _load_env_file_into_process(env_path)
     paths = _runtime_paths(load_config(args.config))
-    env = _child_env(paths.repo_root, env_path)
+    env = _child_env(paths.repo_root, env_path, paths.work_dir)
     cmd = [sys.executable, "-m", module]
     if args.config != DEFAULT_CONFIG_PATH and "--config" not in args.args:
         cmd.extend(["--config", args.config])

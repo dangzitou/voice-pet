@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 import re
 import secrets
+import subprocess
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from pathlib import Path
+from typing import Any
 
 from ..audio.capture import AudioCapture
 from ..audio.player import AudioPlayer
@@ -23,6 +26,9 @@ class VoicePetStateMachine:
         mimo = config["mimo"]
         audio = config["audio"]
         wakeword = config["wakeword"]
+        music = config.get("music", {})
+        if not isinstance(music, dict):
+            music = {}
         runtime = config["runtime"]
 
         api_key = mimo.get("api_key", "").strip()
@@ -92,6 +98,13 @@ class VoicePetStateMachine:
             prompt_texts = []
         self.thinking_prompt_texts = [str(text).strip() for text in prompt_texts if str(text).strip()]
         self.thinking_prompt_paths = self._prepare_thinking_prompt_paths()
+        pause_prompt_texts = _text_list(music.get("pause_prompt_texts"), DEFAULT_MUSIC_PAUSE_PROMPT_TEXTS)
+        self.music_pause_prompt_texts = pause_prompt_texts
+        self.music_pause_prompt_audio_paths = [
+            Path(str(path)).expanduser()
+            for path in _text_list(music.get("pause_prompt_audio_paths"), [])
+        ]
+        self.music_pause_prompt_paths = self._prepare_music_pause_prompt_paths()
         self.wake_max_extra_chars = int(wakeword.get("max_extra_chars", 6))
         self.cooldown_seconds = float(wakeword.get("cooldown_seconds", 3.0))
         self.session_timeout_seconds = float(wakeword.get("session_timeout_seconds", 60.0))
@@ -113,6 +126,8 @@ class VoicePetStateMachine:
         )
         self.playback_cooldown_seconds = max(0.0, float(audio.get("playback_cooldown_seconds", 0.5)))
         self.poll_interval_seconds = float(runtime.get("poll_interval_seconds", 0.2))
+        self.external_audio_defer_file = self.work_dir / "external-audio-defer.json"
+        self.external_audio_defer_seconds = float(runtime.get("external_audio_defer_seconds", 180.0))
         self._last_wake_at = 0.0
         self._previous_idle_text = ""
 
@@ -157,12 +172,14 @@ class VoicePetStateMachine:
         self._previous_idle_text = "" if wake.matched else heard
         if not wake.matched:
             return
+        self._previous_idle_text = ""
+        self._last_wake_at = time.monotonic()
+        if self._is_external_audio_active():
+            self._handle_external_audio_speech(wake.cleaned_text, source="idle")
+            return
         if self.wake_max_extra_chars >= 0 and len(wake.cleaned_text) > self.wake_max_extra_chars:
             print(f"[idle] ignored wake match with extra text={wake.cleaned_text}")
             return
-
-        self._previous_idle_text = ""
-        self._last_wake_at = time.monotonic()
         print(f"[wake] matched alias={wake.alias}")
         self.play_ack()
         self._run_wake_session()
@@ -224,17 +241,91 @@ class VoicePetStateMachine:
                 print(f"[session] ignored wakeword-only text={user_text}")
                 user_text = ""
                 continue
+            if self._is_external_audio_active():
+                self._handle_external_audio_speech(session_wake.cleaned_text, source="session")
+                user_text = ""
+                deadline = time.monotonic() + self.session_timeout_seconds
+                continue
             user_text = session_wake.cleaned_text
 
     def _handle_user_text(self, user_text: str) -> None:
+        if self._is_external_audio_active():
+            self._handle_external_audio_speech(user_text, source="handler")
+            return
         print(f"[think] user={user_text}")
-        local_reply = self.router.handle(user_text) if self.router else None
-        reply = local_reply or self._reply_with_waiting_prompt(user_text)
-        reply = _format_spoken_reply(reply)
-        if not reply:
-            reply = "主人，我刚刚没组织好，再说一次吧。"
-        print(f"[speak] reply={reply}")
-        self.say(reply, prefix="reply")
+        defer_ready_path = begin_external_audio_defer(
+            self.work_dir,
+            user_text,
+            defer_file=self.external_audio_defer_file,
+            timeout_seconds=self.external_audio_defer_seconds,
+        )
+        try:
+            local_reply = self.router.handle(user_text) if self.router else None
+            reply = local_reply or self._reply_with_waiting_prompt(user_text)
+            reply = _format_spoken_reply(reply)
+            if not reply:
+                reply = "主人，我刚刚没组织好，再说一次吧。"
+            print(f"[speak] reply={reply}")
+            self.say(reply, prefix="reply")
+        finally:
+            if defer_ready_path is not None:
+                release_external_audio_defer(defer_ready_path, defer_file=self.external_audio_defer_file)
+
+    def _is_external_audio_active(self) -> bool:
+        status = self._external_audio_status()
+        return status not in {"", "stopped"}
+
+    def _external_audio_status(self) -> str:
+        try:
+            result = subprocess.run(
+                ["ncm-cli", "state"],
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=1.5,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"[music] state_check_failed={exc}")
+            return ""
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            print(f"[music] state_check_failed code={result.returncode} stderr={stderr}")
+            return ""
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            print(f"[music] state_check_invalid={result.stdout.strip()}")
+            return ""
+        state = payload.get("state") if isinstance(payload, dict) else {}
+        if not isinstance(state, dict):
+            return ""
+        return str(state.get("status", "")).strip().lower()
+
+    def _handle_external_audio_speech(self, text: str, *, source: str) -> None:
+        action = _external_audio_control_action(text)
+        if action is None:
+            print(f"[music] ignored while external audio active source={source} text={text}")
+            return
+
+        print(f"[music] control source={source} action={action} text={text}")
+        try:
+            result = self._time_call(
+                f"music_{action}",
+                subprocess.run,
+                ["ncm-cli", action],
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"[music] control_failed action={action} error={exc}")
+            return
+        stdout = result.stdout.strip()
+        stderr = result.stderr.strip()
+        print(f"[music] control_result action={action} code={result.returncode} stdout={stdout} stderr={stderr}")
+        if action == "pause" and result.returncode == 0:
+            self.play_music_pause_prompt()
 
     def _reply_with_waiting_prompt(self, user_text: str) -> str:
         if self.thinking_prompt_delay_seconds <= 0 or not self.thinking_prompt_texts:
@@ -281,6 +372,17 @@ class VoicePetStateMachine:
         except Exception as exc:
             print(f"[think] prompt_audio_failed={exc}")
 
+    def play_music_pause_prompt(self) -> None:
+        prompt_path = self._pick_music_pause_prompt_path()
+        if prompt_path is None:
+            return
+        try:
+            self._ensure_music_pause_prompt_audio(prompt_path)
+            print(f"[music] pause_prompt_audio={prompt_path}")
+            self._play_file_sync("music_pause_prompt", prompt_path)
+        except Exception as exc:
+            print(f"[music] pause_prompt_failed={exc}")
+
     def _prepare_thinking_prompt_paths(self) -> list[Path]:
         prompt_dir = self.work_dir / "thinking-prompts"
         return [prompt_dir / f"prompt-{index + 1:02d}.wav" for index, _ in enumerate(self.thinking_prompt_texts)]
@@ -288,6 +390,13 @@ class VoicePetStateMachine:
     def _prepare_ack_variant_paths(self) -> list[Path]:
         ack_dir = self.work_dir / "ack-variants"
         return [ack_dir / f"ack-{index + 1:02d}.wav" for index, _ in enumerate(self.ack_texts)]
+
+    def _prepare_music_pause_prompt_paths(self) -> list[Path]:
+        prompt_dir = self.work_dir / "music-control-prompts"
+        return [
+            prompt_dir / f"pause-{index + 1:02d}.wav"
+            for index, _ in enumerate(self.music_pause_prompt_texts)
+        ]
 
     def _pick_ack_variant(self) -> tuple[Path, str] | None:
         variants: list[tuple[Path, str]] = []
@@ -303,6 +412,12 @@ class VoicePetStateMachine:
         if not self.thinking_prompt_paths:
             return None
         return secrets.choice(self.thinking_prompt_paths)
+
+    def _pick_music_pause_prompt_path(self) -> Path | None:
+        variants = list(self.music_pause_prompt_audio_paths) + list(self.music_pause_prompt_paths)
+        if not variants:
+            return None
+        return secrets.choice(variants)
 
     def _ensure_ack_audio(self, path: Path, text: str) -> None:
         if path.is_file():
@@ -320,6 +435,17 @@ class VoicePetStateMachine:
         prompt_text = self.thinking_prompt_texts[index]
         path.parent.mkdir(parents=True, exist_ok=True)
         audio_bytes = self._time_call("think_prompt_tts", self.tts.synthesize, prompt_text)
+        path.write_bytes(audio_bytes)
+
+    def _ensure_music_pause_prompt_audio(self, path: Path) -> None:
+        if path.is_file():
+            return
+        if path not in self.music_pause_prompt_paths:
+            raise FileNotFoundError(path)
+        index = self.music_pause_prompt_paths.index(path)
+        prompt_text = self.music_pause_prompt_texts[index]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        audio_bytes = self._time_call("music_pause_prompt_tts", self.tts.synthesize, prompt_text)
         path.write_bytes(audio_bytes)
 
     def say(self, text: str, prefix: str) -> None:
@@ -395,11 +521,87 @@ _EMOJI = re.compile(r"[\U00010000-\U0010ffff]")
 _MARKDOWN_NOISE = re.compile(r"[*_`>#~\[\]]+")
 _LEADING_FILLERS = re.compile(r"^(?:[哈啊嗯呃额呵嘿]{1,}|哈哈+|呵呵+|嘿嘿+)[，。,.!?！？；;：:\s]*")
 _SPACES = re.compile(r"\s+")
+_EXTERNAL_AUDIO_REQUEST = re.compile(r"(?:播放|放首|放一首|点歌|点一首|来一首|听歌|听音乐|播歌|放歌)")
+_EXTERNAL_AUDIO_STOP_REQUEST = re.compile(r"(?:停止播放|暂停播放|关闭音乐|关掉音乐|停止音乐|暂停音乐|停歌|别放|不要放)")
+_EXTERNAL_AUDIO_STOP_CONTROL = re.compile(r"(?:停止播放|关闭音乐|关掉音乐|停止音乐|停歌|停止|关掉|别放|不要放)")
+_EXTERNAL_AUDIO_PAUSE_CONTROL = re.compile(r"(?:暂停播放|暂停音乐|暂停|先停一下|等一下)")
+_EXTERNAL_AUDIO_RESUME_CONTROL = re.compile(r"(?:继续播放|恢复播放|继续音乐|恢复音乐|继续|恢复|接着放)")
+DEFAULT_MUSIC_PAUSE_PROMPT_TEXTS = [
+    "已经暂停啦，主人。",
+    "暂停好啦，主人。",
+    "好哒，已经帮你暂停啦。",
+    "主人，音乐先暂停啦。",
+    "收到，已经暂停播放啦。",
+    "暂停啦，主人你说。",
+    "好，先暂停啦。",
+    "已经先停下啦，主人。",
+    "音乐暂停啦，主人。",
+    "好啦主人，已经暂停。",
+]
 
 
 def _format_spoken_reply(text: str) -> str:
     spoken = _clean_spoken_text(text)
     return spoken.strip()
+
+
+def begin_external_audio_defer(
+    work_dir: Path,
+    user_text: str,
+    *,
+    defer_file: Path | None = None,
+    timeout_seconds: float = 180.0,
+) -> Path | None:
+    if not _is_external_audio_request(user_text):
+        return None
+
+    work_dir.mkdir(parents=True, exist_ok=True)
+    defer_path = defer_file or work_dir / "external-audio-defer.json"
+    request_id = secrets.token_hex(8)
+    ready_path = work_dir / f"external-audio-ready-{request_id}.signal"
+    try:
+        ready_path.unlink(missing_ok=True)
+        payload = {
+            "request_id": request_id,
+            "ready_file": str(ready_path),
+            "created_at": time.time(),
+            "expires_at": time.time() + max(1.0, timeout_seconds),
+        }
+        _write_json_atomic(defer_path, payload)
+        print(f"[audio] external_audio_defer={defer_path} ready={ready_path}")
+        return ready_path
+    except Exception as exc:
+        print(f"[audio] external_audio_defer_failed={exc}")
+        return None
+
+
+def release_external_audio_defer(ready_path: Path, *, defer_file: Path | None = None) -> None:
+    try:
+        ready_path.parent.mkdir(parents=True, exist_ok=True)
+        ready_path.write_text(f"{time.time():.3f}\n", encoding="utf-8")
+        if defer_file is not None:
+            defer_file.unlink(missing_ok=True)
+        print(f"[audio] external_audio_ready={ready_path}")
+    except Exception as exc:
+        print(f"[audio] external_audio_ready_failed={exc}")
+
+
+def _external_audio_control_action(text: str) -> str | None:
+    compact = _compact_text(text)
+    if _EXTERNAL_AUDIO_STOP_CONTROL.search(compact):
+        return "stop"
+    if _EXTERNAL_AUDIO_PAUSE_CONTROL.search(compact):
+        return "pause"
+    if _EXTERNAL_AUDIO_RESUME_CONTROL.search(compact):
+        return "resume"
+    return None
+
+
+def _is_external_audio_request(text: str) -> bool:
+    compact = _compact_text(text)
+    if _EXTERNAL_AUDIO_STOP_REQUEST.search(compact):
+        return False
+    return bool(_EXTERNAL_AUDIO_REQUEST.search(compact))
 
 
 def _positive_float(value, default: float) -> float:
@@ -416,3 +618,20 @@ def _clean_spoken_text(text: str) -> str:
     text = text.replace("\r", " ").replace("\n", " ")
     text = _SPACES.sub(" ", text).strip()
     return _LEADING_FILLERS.sub("", text).strip()
+
+
+def _compact_text(text: str) -> str:
+    return re.sub(r"[\s，。,.!?！？；;：:、]+", "", text)
+
+
+def _text_list(value: Any, default: list[str]) -> list[str]:
+    if isinstance(value, list):
+        texts = [str(text).strip() for text in value if str(text).strip()]
+        return texts or list(default)
+    return list(default)
+
+
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    tmp_path = path.with_suffix(f"{path.suffix}.tmp")
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    tmp_path.replace(path)

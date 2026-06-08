@@ -10,7 +10,12 @@ from ..brain.direct_llm import DirectLLMAdapter
 from ..brain.picoclaw import PicoBridgeConfig, PicoClawAdapter
 from ..config import load_config
 from ..runtime.actions import build_default_router
-from ..runtime.state_machine import VoicePetStateMachine, _format_spoken_reply
+from ..runtime.state_machine import (
+    VoicePetStateMachine,
+    _format_spoken_reply,
+    begin_external_audio_defer,
+    release_external_audio_defer,
+)
 from ..runtime.wakeword import WakewordDetector
 from ..tts.mimo_tts import MimoTTS
 
@@ -119,21 +124,26 @@ def main() -> None:
         print(f"artifacts_dir: {work_dir}")
         return
     handled_text = session_wake.cleaned_text
-    local_reply = router.handle(handled_text) if router else None
-    reply_text = local_reply or brain.reply(handled_text)
-    reply_text = _format_spoken_reply(reply_text)
+    ready_path = begin_external_audio_defer(Path(runtime["work_dir"]), handled_text)
+    try:
+        local_reply = router.handle(handled_text) if router else None
+        reply_text = local_reply or brain.reply(handled_text)
+        reply_text = _format_spoken_reply(reply_text)
 
-    reply_audio = work_dir / "reply.wav"
-    reply_audio.write_bytes(tts.synthesize(reply_text))
+        reply_audio = work_dir / "reply.wav"
+        reply_audio.write_bytes(tts.synthesize(reply_text))
 
-    print(f"user_text: {args.user_text}")
-    print(f"user_asr: {user_asr}")
-    print(f"handled_text: {handled_text}")
-    print(f"reply_text: {reply_text}")
-    print(f"artifacts_dir: {work_dir}")
+        print(f"user_text: {args.user_text}")
+        print(f"user_asr: {user_asr}")
+        print(f"handled_text: {handled_text}")
+        print(f"reply_text: {reply_text}")
+        print(f"artifacts_dir: {work_dir}")
 
-    if args.play:
-        player.play_file(str(reply_audio))
+        if args.play:
+            player.play_file(str(reply_audio))
+    finally:
+        if ready_path is not None:
+            release_external_audio_defer(ready_path, defer_file=Path(runtime["work_dir"]) / "external-audio-defer.json")
 
 
 def run_offline_mock(wake_text: str, user_text: str) -> None:

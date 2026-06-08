@@ -296,6 +296,14 @@ voice-pet config set \
   --thinking-prompt-text "主人，稍等一下，我还在组织回复。"
 ```
 
+音乐暂停确认也可以配置多条随机话术。第一次触发时会合成到 `~/.picoclaw/voice-pet/runtime/music-control-prompts/`，之后直接播放缓存音频：
+
+```bash
+voice-pet config set \
+  --music-pause-prompt-text "已经暂停啦，主人。" \
+  --music-pause-prompt-text "暂停好啦，主人。"
+```
+
 ### 8. 可选：网易云自然语言点歌
 
 网易云音乐能力不在 `voice-pet` 里重做 agent。`voice-pet` 只负责把语音请求转给 PicoClaw；搜索、推荐、播放控制由 PicoClaw 的网易云 skills 调用 `ncm-cli` 完成。
@@ -364,15 +372,20 @@ ncm-cli stop
 再走 PicoClaw/voice-pet mock 链路。下面只有唤醒和用户输入是 mock，PicoClaw、网易云播放和 TTS 播放都走真实链路：
 
 ```bash
-voice-pet mock --wake-text "小爱小爱" --user-text "小爱播放起风了" --play
+voice-pet mock --wake-text "小爱小爱" --user-text "小爱播放邓紫棋的你把我灌醉" --play
 ncm-cli state
 ```
+
+点歌类请求会先由 voice-pet 口播 PicoClaw 的提示，例如“正在播放……”，提示音播完后再释放 `ncm-cli` 启动 `mpv` 正式播放音乐。这样可以避免提示音和音乐同时抢同一个蓝牙/ALSA 输出。
+
+音乐播放期间 voice-pet 仍会保持麦克风监听，但会进入音乐控制模式：只响应带 `小爱` 前缀的播放控制，例如 `小爱暂停播放`、`小爱停止播放`、`小爱继续播放`。其他内容，包括 `小爱阿爸阿爸` 这类非控制语音，会记录为忽略，不会转发给 PicoClaw，也不会打断音乐。暂停成功后会随机播放一条本地缓存提示音，例如“已经暂停啦，主人。”；提示话术可在 `music.pause_prompt_texts` 里配置，默认 10 条。
 
 如果 `ncm-cli play` 显示已经解析到歌曲，但提示 `daemon 无响应` 或没有 `mpv` 进程，这是 `ncm-cli` 本地播放器 daemon 问题，不是 `voice-pet` 的 ASR/TTS 问题。优先检查：
 
 ```bash
 tail -n 120 ~/.config/ncm-cli/app.log
 pgrep -a mpv
+ls ~/.picoclaw/voice-pet/runtime/external-audio-*
 ncm-cli stop
 ```
 
@@ -453,10 +466,11 @@ voice-pet start --no-gateway
 | `voice-pet mic-test --list-devices` | 列出 ALSA 录音设备 |
 | `voice-pet config show` | 查看当前模型、音频和 runtime 配置 |
 | `voice-pet config set --playback-cooldown 0.5` | 设置每次播放后再开麦前的等待时间 |
+| `voice-pet config set --music-pause-prompt-text "已经暂停啦，主人。"` | 追加一条音乐暂停确认随机话术 |
 | `voice-pet config set --wake-silence-seconds 1.0 --utterance-silence-seconds 1.2 --wake-max-seconds 0 --utterance-max-seconds 0` | 持续收完整段人声，`max=0` 表示不按固定时长切段 |
 | `voice-pet demo --text "主人，咋啦"` | 跑一次 MiMo TTS/ASR 调试 demo |
 | `voice-pet mock --offline --wake-text "小爱小爱" --user-text "小爱今天厦门天气咋样"` | 跑离线 mock 闭环测试 |
-| `voice-pet mock --wake-text "小爱小爱" --user-text "小爱播放起风了" --play` | 用 mock 输入跑真实 PicoClaw/网易云/TTS 播放链路 |
+| `voice-pet mock --wake-text "小爱小爱" --user-text "小爱播放邓紫棋的你把我灌醉" --play` | 用 mock 输入跑真实 PicoClaw/网易云/TTS 播放链路 |
 | `ncm-cli login --check` | 检查网易云 CLI 登录态 |
 | `ncm-cli search song --keyword "起风了" --limit 1 --userInput "搜索起风了"` | 验证网易云搜索能力 |
 | `ncm-cli state` | 查看网易云本地播放器状态 |
@@ -480,6 +494,16 @@ voice-pet start --no-gateway
 
 唤醒态里的后续对话也必须以 `小爱` 开头。不带前缀的语音会记录为 `ignored non-prefixed speech=...`，不会转发给 PicoClaw。60 秒没有可处理语音会退出唤醒态。
 
+如果当前正在播放音乐，后续语音不会进入普通问答，只会尝试匹配音乐控制指令。可用示例：
+
+```text
+小爱暂停播放
+小爱停止播放
+小爱继续播放
+```
+
+`小爱暂停播放` 成功后会播放随机暂停确认音；`小爱阿爸阿爸` 这类非控制内容只会被忽略。
+
 ### 12. 常见排障
 
 | 现象 | 检查 |
@@ -493,7 +517,7 @@ voice-pet start --no-gateway
 | 蓝牙连接失败 | 先用 `bluetoothctl connect <BT_MAC>` 和 `aplay -L | grep -i bluealsa` 确认系统层可用 |
 | 回复太长或太慢 | 使用 `--spoken-reply-first-sentence`，并保持 PicoClaw 回复 prompt 简短 |
 | 点歌没反应 | 跑 `voice-pet logs --target gateway -f`，确认 PicoClaw 已加载 `netease-music-cli` 和 `netease-music-assistant` |
-| 搜到歌但不播放 | 跑 `ncm-cli state`、`pgrep -a mpv`、`tail -n 120 ~/.config/ncm-cli/app.log`，排查 `ncm-cli` 播放器 daemon |
+| 搜到歌但不播放 | 跑 `ncm-cli state`、`pgrep -a mpv`、`tail -n 120 ~/.config/ncm-cli/app.log`，并检查 `~/.picoclaw/voice-pet/runtime/external-audio-*` 是否有未释放的延迟播放信号 |
 | 网易云请求 502 或音频 URL 无法访问 | 清掉代理环境后重试，或确认 `voice-pet start` 启动的 gateway 环境里没有 `HTTP_PROXY/HTTPS_PROXY/ALL_PROXY` |
 
 ### 13. 可选：systemd 用户服务

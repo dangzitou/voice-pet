@@ -66,7 +66,12 @@ WAKEWORD_FIELDS = {
     "session_timeout_seconds": "wakeword.session_timeout_seconds",
 }
 
-CONFIG_LABELS = MODEL_FIELDS | AUDIO_FIELDS | WAKEWORD_FIELDS | RUNTIME_FIELDS
+MUSIC_FIELDS = {
+    "pause_prompt_texts": "music.pause_prompt_texts",
+    "pause_prompt_audio_paths": "music.pause_prompt_audio_paths",
+}
+
+CONFIG_LABELS = MODEL_FIELDS | AUDIO_FIELDS | WAKEWORD_FIELDS | MUSIC_FIELDS | RUNTIME_FIELDS
 
 
 def main() -> None:
@@ -166,6 +171,18 @@ def main() -> None:
         dest="thinking_prompt_texts",
         action="append",
         help="append a prebuilt thinking prompt text; repeat this flag to add multiple prompts",
+    )
+    set_parser.add_argument(
+        "--music-pause-prompt-text",
+        dest="pause_prompt_texts",
+        action="append",
+        help="append a music pause confirmation text; repeat this flag to add multiple prompts",
+    )
+    set_parser.add_argument(
+        "--music-pause-prompt-audio",
+        dest="pause_prompt_audio_paths",
+        action="append",
+        help="append a prebuilt music pause confirmation audio path; repeat this flag to add multiple prompts",
     )
     set_parser.add_argument(
         "--wake-max-extra-chars",
@@ -280,6 +297,8 @@ def _cmd_show(args: argparse.Namespace) -> None:
         print(f"{AUDIO_FIELDS[key]}={value}")
     for key, value in values["wakeword"].items():
         print(f"{WAKEWORD_FIELDS[key]}={value}")
+    for key, value in values["music"].items():
+        print(f"{MUSIC_FIELDS[key]}={value}")
     for key, value in values["runtime"].items():
         print(f"{CONFIG_LABELS[key]}={value}")
     env_state = "set" if os.getenv("MIMO_API_KEY", "").strip() else "not set"
@@ -294,6 +313,7 @@ def _cmd_set(args: argparse.Namespace) -> None:
     mimo = data.setdefault("mimo", {})
     audio = data.setdefault("audio", {})
     wakeword = data.setdefault("wakeword", {})
+    music = data.setdefault("music", {})
     runtime = data.setdefault("runtime", {})
 
     changes: list[str] = []
@@ -332,21 +352,21 @@ def _cmd_set(args: argparse.Namespace) -> None:
         if old_value != value:
             changes.append(f"{path}: {old_value} -> {value}")
 
-    for key, path in SPOKEN_REPLY_FIELDS.items():
-        value = getattr(args, key, None)
-        if value is None:
-            continue
-        old_value = runtime.get(key, "")
-        runtime[key] = value
-        if old_value != value:
-            changes.append(f"{path}: {old_value} -> {value}")
-
     for key, path in WAKEWORD_FIELDS.items():
         value = getattr(args, key, None)
         if value is None:
             continue
         old_value = wakeword.get(key, "")
         wakeword[key] = value
+        if old_value != value:
+            changes.append(f"{path}: {old_value} -> {value}")
+
+    for key, path in MUSIC_FIELDS.items():
+        value = getattr(args, key, None)
+        if value is None:
+            continue
+        old_value = music.get(key, "")
+        music[key] = value
         if old_value != value:
             changes.append(f"{path}: {old_value} -> {value}")
 
@@ -392,6 +412,9 @@ def _config_values(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
     audio = data.get("audio", {})
     if not isinstance(audio, dict):
         audio = {}
+    music = data.get("music", {})
+    if not isinstance(music, dict):
+        music = {}
     return {
         "mimo": {
             key: _mimo_value(mimo, key)
@@ -404,6 +427,10 @@ def _config_values(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
         "wakeword": {
             key: _wakeword_value(wakeword, key)
             for key in WAKEWORD_FIELDS
+        },
+        "music": {
+            key: _music_value(music, key)
+            for key in MUSIC_FIELDS
         },
         "runtime": {
             key: _runtime_value(runtime, key)
@@ -439,6 +466,10 @@ def _wakeword_value(wakeword: dict[str, Any], key: str) -> str | float:
     if key == "session_timeout_seconds" and value != "":
         return float(value)
     return str(value)
+
+
+def _music_value(music: dict[str, Any], key: str) -> str:
+    return str(music.get(key, ""))
 
 
 def _find_example_path(path: str) -> Path:
