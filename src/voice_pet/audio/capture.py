@@ -48,6 +48,8 @@ class AudioCapture:
         frame_bytes = self.channels * 2
         chunk_frames = max(1, int(self.sample_rate * max(20, chunk_ms) / 1000))
         chunk_bytes = chunk_frames * frame_bytes
+        explicit_start_threshold = start_threshold is not None and start_threshold > 0
+        explicit_silence_threshold = silence_threshold is not None and silence_threshold > 0
         start_threshold = self.silence_threshold if start_threshold is None else start_threshold
         silence_threshold = self.silence_threshold if silence_threshold is None else silence_threshold
         silence_seconds = self.silence_seconds if silence_seconds is None else silence_seconds
@@ -83,22 +85,30 @@ class AudioCapture:
             if not speech_started_at:
                 noise_samples.append(rms)
                 noise_floor = _median(noise_samples)
-                effective_start_threshold = _effective_threshold(
-                    configured=float(start_threshold),
-                    noise_floor=noise_floor,
-                    multiplier=2.0,
-                    margin=250.0,
-                    minimum=650.0,
+                effective_start_threshold = (
+                    float(start_threshold)
+                    if explicit_start_threshold
+                    else _effective_threshold(
+                        configured=float(start_threshold),
+                        noise_floor=noise_floor,
+                        multiplier=2.0,
+                        margin=250.0,
+                        minimum=650.0,
+                    )
                 )
                 waiting_peak_rms = max(waiting_peak_rms, rms)
                 if rms >= effective_start_threshold:
                     speech_started_at = now
-                    active_silence_threshold = _effective_threshold(
-                        configured=float(silence_threshold),
-                        noise_floor=noise_floor,
-                        multiplier=1.5,
-                        margin=150.0,
-                        minimum=500.0,
+                    active_silence_threshold = (
+                        float(silence_threshold)
+                        if explicit_silence_threshold
+                        else _effective_threshold(
+                            configured=float(silence_threshold),
+                            noise_floor=noise_floor,
+                            multiplier=1.5,
+                            margin=150.0,
+                            minimum=500.0,
+                        )
                     )
                     peak_rms = rms
                     print(
