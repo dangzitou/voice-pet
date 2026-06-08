@@ -70,8 +70,6 @@
     "work_dir": "~/.picoclaw/voice-pet/runtime",
     "poll_interval_seconds": 0.2,
     "request_timeout_seconds": 120,
-    "spoken_reply_max_chars": 36,
-    "spoken_reply_first_sentence": true,
     "brain": "picoclaw",
     "enable_local_actions": false,
     "picoclaw_ws_url": "ws://127.0.0.1:18790/pico/ws",

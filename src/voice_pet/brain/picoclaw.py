@@ -5,9 +5,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 VOICE_REPLY_PROMPT = (
-    "请用非常简短、自然、口语化的中文回答。"
-    "不要使用 markdown、emoji、列表、代码块。"
-    "通常控制在 1 到 2 句话，优先直接回答。"
+    "你是桌面语音助手，请用自然口语中文回答。"
+    "回答要短，但必须有信息量，不能用空泛话糊弄。"
+    "简单问题用 1 到 2 句话；新闻、天气、整理、对比、步骤类问题可以给 3 到 5 个短要点。"
+    "不要使用 markdown、emoji、代码块；可以用顿号、分号或一二三这种口语编号。"
 )
 
 

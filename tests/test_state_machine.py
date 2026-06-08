@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from voice_pet.runtime.state_machine import VoicePetStateMachine
+from voice_pet.runtime.state_machine import VoicePetStateMachine, _format_spoken_reply
 
 
 class StateMachineTest(unittest.TestCase):
@@ -35,6 +35,11 @@ class StateMachineTest(unittest.TestCase):
 
             self.assertEqual(machine.wake_max_seconds, 5.0)
             self.assertEqual(machine.utterance_max_seconds, 20.0)
+
+    def test_spoken_reply_cleanup_does_not_truncate_content(self) -> None:
+        reply = "今天新闻主要有三条。第一，A 有新进展。第二，B 引发关注。第三，C 值得继续看。"
+
+        self.assertEqual(_format_spoken_reply(reply), reply)
 
 
 def _base_config(work_dir: str) -> dict:

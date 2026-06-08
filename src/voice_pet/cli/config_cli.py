@@ -66,14 +66,7 @@ WAKEWORD_FIELDS = {
     "session_timeout_seconds": "wakeword.session_timeout_seconds",
 }
 
-
-SPOKEN_REPLY_FIELDS = {
-    "spoken_reply_max_chars": "runtime.spoken_reply_max_chars",
-    "spoken_reply_first_sentence": "runtime.spoken_reply_first_sentence",
-}
-
-
-CONFIG_LABELS = MODEL_FIELDS | AUDIO_FIELDS | WAKEWORD_FIELDS | RUNTIME_FIELDS | SPOKEN_REPLY_FIELDS
+CONFIG_LABELS = MODEL_FIELDS | AUDIO_FIELDS | WAKEWORD_FIELDS | RUNTIME_FIELDS
 
 
 def main() -> None:
@@ -185,21 +178,6 @@ def main() -> None:
         dest="session_timeout_seconds",
         type=float,
         help="seconds to stay in wake mode without new user speech",
-    )
-    set_parser.add_argument("--spoken-reply-max-chars", dest="spoken_reply_max_chars", type=int, help="maximum spoken reply characters before TTS")
-    spoken_reply = set_parser.add_mutually_exclusive_group()
-    spoken_reply.add_argument(
-        "--spoken-reply-first-sentence",
-        dest="spoken_reply_first_sentence",
-        action="store_true",
-        default=None,
-        help="only speak the first useful sentence",
-    )
-    spoken_reply.add_argument(
-        "--no-spoken-reply-first-sentence",
-        dest="spoken_reply_first_sentence",
-        action="store_false",
-        help="allow TTS to speak the full cleaned reply up to the character limit",
     )
     set_parser.add_argument(
         "--brain",
@@ -429,7 +407,7 @@ def _config_values(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
         },
         "runtime": {
             key: _runtime_value(runtime, key)
-            for key in RUNTIME_FIELDS | SPOKEN_REPLY_FIELDS
+            for key in RUNTIME_FIELDS
         },
     }
 
@@ -451,7 +429,7 @@ def _audio_value(audio: dict[str, Any], key: str) -> str:
 
 def _runtime_value(runtime: dict[str, Any], key: str) -> Any:
     value = runtime.get(key, "")
-    if key in {"enable_local_actions", "picoclaw_manage_gateway", "spoken_reply_first_sentence"}:
+    if key in {"enable_local_actions", "picoclaw_manage_gateway"}:
         return bool(value)
     return value
 

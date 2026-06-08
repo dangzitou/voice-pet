@@ -113,8 +113,6 @@ class VoicePetStateMachine:
         )
         self.playback_cooldown_seconds = max(0.0, float(audio.get("playback_cooldown_seconds", 0.5)))
         self.poll_interval_seconds = float(runtime.get("poll_interval_seconds", 0.2))
-        self.spoken_reply_max_chars = int(runtime.get("spoken_reply_max_chars", 36))
-        self.spoken_reply_first_sentence = bool(runtime.get("spoken_reply_first_sentence", True))
         self._last_wake_at = 0.0
         self._previous_idle_text = ""
 
@@ -232,11 +230,7 @@ class VoicePetStateMachine:
         print(f"[think] user={user_text}")
         local_reply = self.router.handle(user_text) if self.router else None
         reply = local_reply or self._reply_with_waiting_prompt(user_text)
-        reply = _format_spoken_reply(
-            reply,
-            max_chars=self.spoken_reply_max_chars,
-            first_sentence=self.spoken_reply_first_sentence,
-        )
+        reply = _format_spoken_reply(reply)
         if not reply:
             reply = "主人，我刚刚没组织好，再说一次吧。"
         print(f"[speak] reply={reply}")
@@ -401,15 +395,11 @@ _EMOJI = re.compile(r"[\U00010000-\U0010ffff]")
 _MARKDOWN_NOISE = re.compile(r"[*_`>#~\[\]]+")
 _LEADING_FILLERS = re.compile(r"^(?:[哈啊嗯呃额呵嘿]{1,}|哈哈+|呵呵+|嘿嘿+)[，。,.!?！？；;：:\s]*")
 _SPACES = re.compile(r"\s+")
-_SENTENCE_SPLIT = re.compile(r"(?<=[。！？!?；;])")
-_TRIM_CHARS = " ，。,.!?！？；;：:"
 
 
-def _format_spoken_reply(text: str, max_chars: int, first_sentence: bool) -> str:
+def _format_spoken_reply(text: str) -> str:
     spoken = _clean_spoken_text(text)
-    if first_sentence:
-        spoken = _pick_first_useful_sentence(spoken)
-    return spoken.strip(_TRIM_CHARS + " ")
+    return spoken.strip()
 
 
 def _positive_float(value, default: float) -> float:
@@ -426,19 +416,3 @@ def _clean_spoken_text(text: str) -> str:
     text = text.replace("\r", " ").replace("\n", " ")
     text = _SPACES.sub(" ", text).strip()
     return _LEADING_FILLERS.sub("", text).strip()
-
-
-def _pick_first_useful_sentence(text: str) -> str:
-    for sentence in _SENTENCE_SPLIT.split(text):
-        sentence = sentence.strip(_TRIM_CHARS + " ")
-        if not sentence:
-            continue
-        if _is_low_info_sentence(sentence):
-            continue
-        return sentence
-    return text
-
-
-def _is_low_info_sentence(sentence: str) -> bool:
-    compact = sentence.replace("哈", "").replace("啊", "").replace("嗯", "").strip(_TRIM_CHARS + " ")
-    return len(sentence) <= 6 and len(compact) <= 1

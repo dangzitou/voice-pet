@@ -121,11 +121,7 @@ def main() -> None:
     handled_text = session_wake.cleaned_text
     local_reply = router.handle(handled_text) if router else None
     reply_text = local_reply or brain.reply(handled_text)
-    reply_text = _format_spoken_reply(
-        reply_text,
-        max_chars=int(runtime.get("spoken_reply_max_chars", 36)),
-        first_sentence=bool(runtime.get("spoken_reply_first_sentence", True)),
-    )
+    reply_text = _format_spoken_reply(reply_text)
 
     reply_audio = work_dir / "reply.wav"
     reply_audio.write_bytes(tts.synthesize(reply_text))
@@ -184,8 +180,6 @@ def run_offline_mock(wake_text: str, user_text: str) -> None:
                 "work_dir": tmp,
                 "request_timeout_seconds": 1,
                 "poll_interval_seconds": 0.01,
-                "spoken_reply_max_chars": 36,
-                "spoken_reply_first_sentence": True,
                 "brain": "picoclaw",
                 "picoclaw_ws_url": "ws://127.0.0.1:18790/pico/ws",
                 "picoclaw_token": "offline-token",
@@ -217,7 +211,8 @@ def run_offline_mock(wake_text: str, user_text: str) -> None:
 
         if fake_brain.requests != [expected_user_text]:
             raise AssertionError(f"brain requests = {fake_brain.requests!r}, want {[expected_user_text]!r}")
-        if fake_tts.texts != [f"mock picoclaw reply: {expected_user_text}"]:
+        expected_reply = f"mock picoclaw reply: {expected_user_text}。第二句完整保留。"
+        if fake_tts.texts != [expected_reply]:
             raise AssertionError(f"tts texts = {fake_tts.texts!r}")
         if fake_player.paths[0] != str(ack_audio):
             raise AssertionError(f"ack player path = {fake_player.paths[0]!r}, want {str(ack_audio)!r}")
@@ -274,7 +269,7 @@ class _OfflineBrain:
 
     def reply(self, text: str) -> str:
         self.requests.append(text)
-        return f"mock picoclaw reply: {text}。第二句会被口播整理去掉。😂"
+        return f"mock picoclaw reply: {text}。第二句完整保留。😂"
 
 
 class _OfflinePlayer:
