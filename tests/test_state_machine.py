@@ -25,6 +25,17 @@ class StateMachineTest(unittest.TestCase):
             self.assertEqual(len(machine.player.paths), 3)
             self.assertEqual(machine.tts.texts, ["稍等一下"])
 
+    def test_zero_recording_max_seconds_uses_safe_defaults(self) -> None:
+        with TemporaryDirectory() as tmp:
+            config = _base_config(tmp)
+            config["audio"]["wake_max_seconds"] = 0
+            config["audio"]["utterance_max_seconds"] = 0
+
+            machine = VoicePetStateMachine(config)
+
+            self.assertEqual(machine.wake_max_seconds, 5.0)
+            self.assertEqual(machine.utterance_max_seconds, 20.0)
+
 
 def _base_config(work_dir: str) -> dict:
     return {

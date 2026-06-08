@@ -97,9 +97,9 @@ class VoicePetStateMachine:
         self.session_timeout_seconds = float(wakeword.get("session_timeout_seconds", 60.0))
         self.listen_mode = str(audio.get("listen_mode", "streaming")).strip().lower()
         self.listen_window_seconds = float(audio.get("listen_window_seconds", 2.5))
-        self.wake_max_seconds = float(audio.get("wake_max_seconds", 5.0))
+        self.wake_max_seconds = _positive_float(audio.get("wake_max_seconds", 5.0), default=5.0)
         self.wake_min_seconds = float(audio.get("wake_min_seconds", 0.4))
-        self.utterance_max_seconds = float(audio.get("utterance_max_seconds", 8))
+        self.utterance_max_seconds = _positive_float(audio.get("utterance_max_seconds", 20.0), default=20.0)
         self.utterance_min_seconds = float(audio.get("utterance_min_seconds", 1.0))
         self.utterance_start_timeout_seconds = float(audio.get("utterance_start_timeout_seconds", 8.0))
         self.stream_chunk_ms = int(audio.get("stream_chunk_ms", 100))
@@ -410,6 +410,14 @@ def _format_spoken_reply(text: str, max_chars: int, first_sentence: bool) -> str
     if first_sentence:
         spoken = _pick_first_useful_sentence(spoken)
     return spoken.strip(_TRIM_CHARS + " ")
+
+
+def _positive_float(value, default: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
 
 
 def _clean_spoken_text(text: str) -> str:
