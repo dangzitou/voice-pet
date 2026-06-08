@@ -119,6 +119,74 @@ class StateMachineTest(unittest.TestCase):
             self.assertEqual(machine.tts.texts, ["第一句先说。第二句继续说。", "第三句也要完整保留。"])
             self.assertEqual(len(machine.player.paths), 2)
 
+    def test_handle_user_text_skips_duplicate_progress_reply_but_releases_audio(self) -> None:
+        with TemporaryDirectory() as tmp:
+            machine = VoicePetStateMachine(_base_config(tmp))
+            machine.tts = _FakeTTS()
+            machine.player = _FakePlayer()
+
+            def fake_reply(user_text: str) -> str:
+                machine._played_progress_prompts.add("我正在处理音乐播放。")
+                return "我正在处理音乐播放。"
+
+            with patch.object(machine, "_reply_with_waiting_prompt", fake_reply):
+                machine._handle_user_text("播放一首歌")
+
+            self.assertEqual(machine.tts.texts, [])
+            self.assertEqual(machine.player.paths, [])
+            self.assertEqual(len(list(Path(tmp).glob("external-audio-ready-*.signal"))), 1)
+            self.assertFalse((Path(tmp) / "external-audio-defer.json").exists())
+
+    def test_handle_user_text_speaks_informative_music_reply_after_progress(self) -> None:
+        with TemporaryDirectory() as tmp:
+            machine = VoicePetStateMachine(_base_config(tmp))
+            machine.brain = _FakeBrain(reply='正在播放Aaron Smith的"Dancin"。')
+            machine.tts = _FakeTTS()
+            machine.player = _FakePlayer()
+            machine._played_progress_prompts.add("我正在处理音乐播放。")
+
+            machine._handle_user_text("播放一首歌")
+
+            self.assertEqual(machine.tts.texts, ['正在播放Aaron Smith的"Dancin"。'])
+            self.assertEqual(len(machine.player.paths), 1)
+
+    def test_music_progress_prompt_releases_external_audio_before_final_reply(self) -> None:
+        with TemporaryDirectory() as tmp:
+            machine = VoicePetStateMachine(_base_config(tmp))
+            machine.tts = _FakeTTS()
+            machine.player = _FakePlayer()
+            ready_path = begin_external_audio_defer(
+                Path(tmp),
+                "播放一首歌",
+                defer_file=Path(tmp) / "external-audio-defer.json",
+            )
+            assert ready_path is not None
+            machine._active_external_audio_ready_path = ready_path
+
+            machine._play_progress_prompt("我正在处理音乐播放。")
+
+            self.assertTrue(ready_path.is_file())
+            self.assertFalse((Path(tmp) / "external-audio-defer.json").exists())
+            self.assertTrue(machine._external_audio_released_during_progress)
+            self.assertIsNone(machine._active_external_audio_ready_path)
+
+    def test_handle_user_text_swallows_timeout_after_music_progress_release(self) -> None:
+        with TemporaryDirectory() as tmp:
+            machine = VoicePetStateMachine(_base_config(tmp))
+            machine.tts = _FakeTTS()
+            machine.player = _FakePlayer()
+
+            def fake_reply(user_text: str) -> str:
+                machine._external_audio_released_during_progress = True
+                raise RuntimeError("timeout waiting for reply")
+
+            with patch.object(machine, "_reply_with_waiting_prompt", fake_reply):
+                machine._handle_user_text("播放一首歌")
+
+            self.assertEqual(machine.tts.texts, [])
+            self.assertEqual(machine.player.paths, [])
+            self.assertFalse((Path(tmp) / "external-audio-defer.json").exists())
+
     def test_external_audio_request_creates_ready_signal(self) -> None:
         with TemporaryDirectory() as tmp:
             work_dir = Path(tmp)
@@ -342,12 +410,13 @@ class _ProgressBrain:
 
 
 class _FakeBrain:
-    def __init__(self) -> None:
+    def __init__(self, reply: str = "回复") -> None:
         self.requests: list[str] = []
+        self.response = reply
 
     def reply(self, text: str) -> str:
         self.requests.append(text)
-        return "回复"
+        return self.response
 
 
 class _FakeTTS:

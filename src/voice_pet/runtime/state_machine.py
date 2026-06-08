@@ -41,6 +41,8 @@ class VoicePetStateMachine:
         self.brain_progress_path = self.work_dir / "picoclaw-progress.json"
         self.external_audio_local_state_path = self.work_dir / "external-audio-local-state.json"
         self._played_progress_prompts: set[str] = set()
+        self._active_external_audio_ready_path: Path | None = None
+        self._external_audio_released_during_progress = False
         self.capture = AudioCapture(
             sample_rate=audio["sample_rate"],
             channels=audio["channels"],
@@ -292,17 +294,34 @@ class VoicePetStateMachine:
             defer_file=self.external_audio_defer_file,
             timeout_seconds=self.external_audio_defer_seconds,
         )
+        self._active_external_audio_ready_path = defer_ready_path
+        self._external_audio_released_during_progress = False
         try:
             local_reply = self.router.handle(user_text) if self.router else None
-            reply = local_reply or self._reply_with_waiting_prompt(user_text)
+            try:
+                reply = local_reply or self._reply_with_waiting_prompt(user_text)
+            except Exception as exc:
+                if self._external_audio_released_during_progress:
+                    print(f"[speak] skipped_reply_after_external_audio_release error={exc}")
+                    return
+                raise
             reply = _format_spoken_reply(reply)
             if not reply:
                 reply = "主人，我刚刚没组织好，再说一次吧。"
+            if self._external_audio_released_during_progress:
+                print(f"[speak] skipped_reply_after_external_audio_release={reply}")
+                return
+            if self._is_duplicate_progress_reply(reply):
+                print(f"[speak] skipped_duplicate_progress_reply={reply}")
+                return
             print(f"[speak] reply={reply}")
             self.say(reply, prefix="reply")
         finally:
-            if defer_ready_path is not None:
+            self._played_progress_prompts.clear()
+            if defer_ready_path is not None and self._active_external_audio_ready_path is not None:
                 release_external_audio_defer(defer_ready_path, defer_file=self.external_audio_defer_file)
+            self._active_external_audio_ready_path = None
+            self._external_audio_released_during_progress = False
 
     def _is_external_audio_active(self) -> bool:
         status = self._external_audio_status()
@@ -380,11 +399,7 @@ class VoicePetStateMachine:
         self._clear_brain_progress()
         self._played_progress_prompts.clear()
         if self.thinking_prompt_delay_seconds <= 0 or not self.thinking_prompt_texts:
-            try:
-                return self._time_call("brain_reply", self.brain.reply, user_text)
-            finally:
-                self._played_progress_prompts.clear()
-                self._clear_brain_progress()
+            return self._time_call("brain_reply", self.brain.reply, user_text)
 
         started_at = time.monotonic()
         try:
@@ -417,7 +432,6 @@ class VoicePetStateMachine:
                     prompt_interval_seconds = self._thinking_prompt_interval_seconds(prompt_count + 1)
                     next_prompt_at = time.monotonic() + prompt_interval_seconds
         finally:
-            self._played_progress_prompts.clear()
             self._clear_brain_progress()
 
     def _thinking_prompt_interval_seconds(self, prompt_number: int) -> float:
@@ -455,6 +469,9 @@ class VoicePetStateMachine:
             self._play_file_sync("progress_prompt", prompt_path)
         except Exception as exc:
             print(f"[think] progress_prompt_failed={exc}")
+        finally:
+            if self._is_external_audio_progress_prompt(text):
+                self._release_external_audio_after_progress_prompt()
 
     def play_music_pause_prompt(self) -> None:
         prompt_path = self._pick_music_pause_prompt_path()
@@ -508,6 +525,34 @@ class VoicePetStateMachine:
             return ""
         text = _format_progress_prompt(str(payload.get("text", "")))
         return text
+
+    def _is_duplicate_progress_reply(self, reply: str) -> bool:
+        reply_compact = _compact_text(reply)
+        if not reply_compact:
+            return False
+        for progress_text in self._played_progress_prompts:
+            progress_compact = _compact_text(progress_text)
+            if not progress_compact:
+                continue
+            if reply_compact == progress_compact:
+                return True
+            if reply_compact.startswith(progress_compact):
+                suffix = reply_compact[len(progress_compact):]
+                if suffix in _DUPLICATE_PROGRESS_REPLY_SUFFIXES:
+                    return True
+        return False
+
+    def _is_external_audio_progress_prompt(self, text: str) -> bool:
+        compact = _compact_text(text)
+        return "音乐" in compact or "播放" in compact
+
+    def _release_external_audio_after_progress_prompt(self) -> None:
+        ready_path = self._active_external_audio_ready_path
+        if ready_path is None:
+            return
+        release_external_audio_defer(ready_path, defer_file=self.external_audio_defer_file)
+        self._active_external_audio_ready_path = None
+        self._external_audio_released_during_progress = True
 
     def _clear_brain_progress(self) -> None:
         try:
@@ -701,6 +746,7 @@ _EXTERNAL_AUDIO_STOP_REQUEST = re.compile(r"(?:停止播放|结束播放|暂停�
 _EXTERNAL_AUDIO_STOP_CONTROL = re.compile(r"(?:停止播放|结束播放|关闭播放|关掉播放|停止音乐|结束音乐|关闭音乐|关掉音乐|停歌|停止|结束|关闭|关掉|别放|别播|不要放|不要播)")
 _EXTERNAL_AUDIO_PAUSE_CONTROL = re.compile(r"(?:暂停播放|暂停音乐|暂停|先停一下|等一下)")
 _EXTERNAL_AUDIO_RESUME_CONTROL = re.compile(r"(?:继续播放|恢复播放|继续音乐|恢复音乐|继续|恢复|接着放)")
+_DUPLICATE_PROGRESS_REPLY_SUFFIXES = {"", "了", "啦", "中", "中啦", "请稍等", "稍等一下"}
 DEFAULT_MUSIC_PAUSE_PROMPT_TEXTS = [
     "已经暂停啦，主人。",
     "暂停好啦，主人。",
