@@ -56,6 +56,13 @@ def main() -> None:
     logs_parser.add_argument("-f", "--follow", action="store_true")
     logs_parser.set_defaults(func=_cmd_logs)
 
+    mic_test_parser = subparsers.add_parser(
+        "mic-test",
+        help="show a live microphone meter and ASR output",
+        add_help=False,
+    )
+    mic_test_parser.set_defaults(func=_cmd_mic_test)
+
     config_parser = subparsers.add_parser("config", help="run the configuration CLI")
     config_parser.set_defaults(func=_cmd_config)
 
@@ -67,7 +74,7 @@ def main() -> None:
 
     args, passthrough = parser.parse_known_args()
     args.args = passthrough
-    if passthrough and args.command not in {"config", "mock", "demo"}:
+    if passthrough and args.command not in {"config", "mock", "demo", "mic-test"}:
         parser.error(f"unrecognized arguments: {' '.join(passthrough)}")
     args.func(args)
 
@@ -125,6 +132,10 @@ def _cmd_logs(args: argparse.Namespace) -> None:
         _follow_log(log_path, args.lines)
         return
     subprocess.run(["tail", "-n", str(args.lines), str(log_path)], check=False)
+
+
+def _cmd_mic_test(args: argparse.Namespace) -> None:
+    _run_tool_module("voice_pet.tools.mic_test", args)
 
 
 def _cmd_config(args: argparse.Namespace) -> None:

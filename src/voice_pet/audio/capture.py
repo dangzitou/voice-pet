@@ -54,10 +54,15 @@ class AudioCapture:
         max_seconds = None if max_seconds is None or max_seconds <= 0 else max_seconds
         pre_roll_chunks = max(0, int(pre_roll_seconds * 1000 / max(20, chunk_ms)))
         pre_roll: deque[bytes] = deque(maxlen=pre_roll_chunks)
+        noise_samples: deque[float] = deque(maxlen=max(8, int(2000 / max(20, chunk_ms))))
         frames: list[bytes] = []
         waiting_started_at = time.monotonic()
         speech_started_at = 0.0
         silence_started_at: float | None = None
+        active_silence_threshold = float(silence_threshold)
+        peak_rms = 0.0
+        waiting_peak_rms = 0.0
+        last_waiting_log_at = 0.0
         self._ensure_stream(chunk_bytes)
         self._drain_chunks()
 
@@ -76,14 +81,47 @@ class AudioCapture:
             rms = _read_pcm_rms(chunk)
             now = read_at
             if not speech_started_at:
-                if rms >= start_threshold:
+                noise_samples.append(rms)
+                noise_floor = _median(noise_samples)
+                effective_start_threshold = _effective_threshold(
+                    configured=float(start_threshold),
+                    noise_floor=noise_floor,
+                    multiplier=2.0,
+                    margin=250.0,
+                    minimum=650.0,
+                )
+                waiting_peak_rms = max(waiting_peak_rms, rms)
+                if rms >= effective_start_threshold:
                     speech_started_at = now
+                    active_silence_threshold = _effective_threshold(
+                        configured=float(silence_threshold),
+                        noise_floor=noise_floor,
+                        multiplier=1.5,
+                        margin=150.0,
+                        minimum=500.0,
+                    )
+                    peak_rms = rms
+                    print(
+                        "[audio] speech_start "
+                        f"rms={rms:.0f} noise={noise_floor:.0f} "
+                        f"start_threshold={effective_start_threshold:.0f} "
+                        f"silence_threshold={active_silence_threshold:.0f}"
+                    )
                     frames.extend(pre_roll)
                     pre_roll.clear()
                     frames.append(chunk)
                 else:
                     if pre_roll_chunks:
                         pre_roll.append(chunk)
+                    if now - last_waiting_log_at >= 2.0:
+                        print(
+                            "[audio] waiting_for_speech "
+                            f"rms={rms:.0f} peak={waiting_peak_rms:.0f} "
+                            f"noise={noise_floor:.0f} "
+                            f"start_threshold={effective_start_threshold:.0f}"
+                        )
+                        waiting_peak_rms = 0.0
+                        last_waiting_log_at = now
                     if (
                         start_timeout_seconds is not None
                         and now - waiting_started_at >= start_timeout_seconds
@@ -92,17 +130,27 @@ class AudioCapture:
                 continue
 
             frames.append(chunk)
+            peak_rms = max(peak_rms, rms)
             elapsed = now - speech_started_at
-            if rms >= silence_threshold:
+            if rms >= active_silence_threshold:
                 silence_started_at = None
             elif elapsed >= min_seconds:
                 if silence_started_at is None:
                     silence_started_at = now
                 elif now - silence_started_at >= silence_seconds:
+                    print(
+                        "[audio] speech_end reason=silence "
+                        f"duration={elapsed:.2f}s peak={peak_rms:.0f} "
+                        f"silence_threshold={active_silence_threshold:.0f}"
+                    )
                     break
 
             if max_seconds is not None and elapsed >= max_seconds:
-                print(f"[audio] safety max_seconds reached: {max_seconds:.1f}s")
+                print(
+                    "[audio] speech_end reason=max_seconds "
+                    f"duration={elapsed:.2f}s peak={peak_rms:.0f} "
+                    f"max_seconds={max_seconds:.1f}s"
+                )
                 break
 
         if not frames:
@@ -320,6 +368,32 @@ def _read_pcm_rms(pcm: bytes) -> float:
         sample = int.from_bytes(pcm[i:i + 2], byteorder="little", signed=True)
         total += sample * sample
     return (total / sample_count) ** 0.5
+
+
+def _median(values: deque[float]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / 2
+
+
+def _effective_threshold(
+    *,
+    configured: float,
+    noise_floor: float,
+    multiplier: float,
+    margin: float,
+    minimum: float,
+) -> float:
+    adaptive = max(minimum, noise_floor * multiplier + margin)
+    if configured <= 0:
+        return adaptive
+    if noise_floor <= configured * 0.9:
+        return configured
+    return max(configured, noise_floor + max(50.0, configured * 0.25))
 
 
 def _write_wav(path: Path, frames: list[bytes], sample_rate: int, channels: int) -> None:
