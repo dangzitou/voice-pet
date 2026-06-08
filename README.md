@@ -17,6 +17,7 @@ English README: [README.en.md](./README.en.md)
 - 唤醒态内连续语音转写并转发给 PicoClaw
 - 60 秒没有新的用户语音时自动退出唤醒态
 - 可选启动和管理 PicoClaw gateway 进程
+- 可通过 PicoClaw skills 接入网易云音乐自然语言点歌
 
 ## 当前状态
 
@@ -77,6 +78,10 @@ pico_bridge_once.js            # Node WebSocket helper for PicoClaw bridge
 - Node.js 和 npm 依赖：
   - `npm install`
 - PicoClaw gateway 和 Pico channel token
+- 可选网易云音乐点歌：
+  - `@music163/ncm-cli`
+  - `mpv`
+  - PicoClaw 网易云音乐 skills
 
 ## 启动流程（从零复现）
 
@@ -291,7 +296,104 @@ voice-pet config set \
   --thinking-prompt-text "主人，稍等一下，我还在组织回复。"
 ```
 
-### 8. 跑启动前验证
+### 8. 可选：网易云自然语言点歌
+
+网易云音乐能力不在 `voice-pet` 里重做 agent。`voice-pet` 只负责把语音请求转给 PicoClaw；搜索、推荐、播放控制由 PicoClaw 的网易云 skills 调用 `ncm-cli` 完成。
+
+安装本地 CLI 和播放器：
+
+```bash
+sudo apt install -y mpv
+npm install -g @music163/ncm-cli
+ncm-cli --version
+mpv --version
+```
+
+配置网易云开放平台凭证和播放器。凭证只写入本机配置，不要提交到仓库：
+
+```bash
+ncm-cli configure
+
+# 或使用非交互命令：
+ncm-cli config set appId "<your-netease-app-id>"
+ncm-cli config set privateKey "<your-netease-private-key>"
+ncm-cli config set player mpv
+```
+
+登录网易云账号：
+
+```bash
+ncm-cli login
+ncm-cli login --check
+```
+
+安装 PicoClaw skills。`clawhub` 如果安装到了 OpenClaw workspace，需要复制到 PicoClaw workspace：
+
+```bash
+npx clawhub@latest install netease-music-assistant
+npx clawhub@latest install netease-music-cli
+npx clawhub@latest install ncm-cli-setup
+
+mkdir -p ~/.picoclaw/workspace/skills
+for skill in netease-music-assistant netease-music-cli ncm-cli-setup; do
+  if [ -d "$HOME/.openclaw/workspace/skills/$skill" ] && [ ! -d "$HOME/.picoclaw/workspace/skills/$skill" ]; then
+    cp -a "$HOME/.openclaw/workspace/skills/$skill" "$HOME/.picoclaw/workspace/skills/$skill"
+  fi
+done
+
+ls ~/.picoclaw/workspace/skills/netease-music-cli/SKILL.md
+```
+
+重启 gateway，让 PicoClaw 重新加载 skills：
+
+```bash
+voice-pet restart
+voice-pet logs --target gateway -n 120
+```
+
+日志里应能看到 `Skills: ... available`，并且数量包含新装的网易云 skills。
+
+先直接验证 `ncm-cli`：
+
+```bash
+ncm-cli search song --keyword "起风了" --limit 1 --userInput "搜索起风了"
+ncm-cli state
+ncm-cli stop
+```
+
+再走 PicoClaw/voice-pet mock 链路。下面只有唤醒和用户输入是 mock，PicoClaw、网易云播放和 TTS 播放都走真实链路：
+
+```bash
+voice-pet mock --wake-text "小爱小爱" --user-text "小爱播放起风了" --play
+ncm-cli state
+```
+
+如果 `ncm-cli play` 显示已经解析到歌曲，但提示 `daemon 无响应` 或没有 `mpv` 进程，这是 `ncm-cli` 本地播放器 daemon 问题，不是 `voice-pet` 的 ASR/TTS 问题。优先检查：
+
+```bash
+tail -n 120 ~/.config/ncm-cli/app.log
+pgrep -a mpv
+ncm-cli stop
+```
+
+如果本机设置了代理，网易云音频 CDN 可能走代理失败。测试时可以清掉代理环境：
+
+```bash
+env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u all_proxy \
+  ncm-cli search song --keyword "起风了" --limit 1 --userInput "搜索起风了"
+```
+
+蓝牙音箱输出建议让 `mpv` 固定到 BlueALSA 设备，例如：
+
+```bash
+mkdir -p ~/.config/mpv
+cat > ~/.config/mpv/mpv.conf <<'EOF'
+ao=alsa
+audio-device=alsa/bluealsa:DEV=<BT_MAC>,PROFILE=a2dp,VOL=100+
+EOF
+```
+
+### 9. 跑启动前验证
 
 不依赖 MiMo/PicoClaw 的离线闭环：
 
@@ -311,7 +413,7 @@ voice-pet mock --wake-text "小爱小爱" --user-text "小爱你好，请只回�
 voice-pet config show
 ```
 
-### 9. 启动完整系统
+### 10. 启动完整系统
 
 `voice-pet start` 会在后台启动 PicoClaw gateway 和 voice-pet runtime；如果 gateway 已经健康运行，它会复用已有 gateway。启动完成后会自动实时输出 voice-pet 日志，按 `Ctrl+C` 只会退出日志跟随，后台服务会继续运行。启动时会加载 `~/.picoclaw/voice-pet/voice-pet.env`，并清掉本机代理环境，避免 localhost gateway 请求被代理干扰。
 
@@ -354,6 +456,11 @@ voice-pet start --no-gateway
 | `voice-pet config set --wake-silence-seconds 1.0 --utterance-silence-seconds 1.2 --wake-max-seconds 0 --utterance-max-seconds 0` | 持续收完整段人声，`max=0` 表示不按固定时长切段 |
 | `voice-pet demo --text "主人，咋啦"` | 跑一次 MiMo TTS/ASR 调试 demo |
 | `voice-pet mock --offline --wake-text "小爱小爱" --user-text "小爱今天厦门天气咋样"` | 跑离线 mock 闭环测试 |
+| `voice-pet mock --wake-text "小爱小爱" --user-text "小爱播放起风了" --play` | 用 mock 输入跑真实 PicoClaw/网易云/TTS 播放链路 |
+| `ncm-cli login --check` | 检查网易云 CLI 登录态 |
+| `ncm-cli search song --keyword "起风了" --limit 1 --userInput "搜索起风了"` | 验证网易云搜索能力 |
+| `ncm-cli state` | 查看网易云本地播放器状态 |
+| `ncm-cli stop` | 停止网易云本地播放 |
 
 日志默认写入：
 
@@ -362,7 +469,7 @@ voice-pet start --no-gateway
 ~/.picoclaw/logs/gateway-voice-pet.log
 ```
 
-### 10. 真实语音测试
+### 11. 真实语音测试
 
 启动后按这个顺序测试：
 
@@ -373,7 +480,7 @@ voice-pet start --no-gateway
 
 唤醒态里的后续对话也必须以 `小爱` 开头。不带前缀的语音会记录为 `ignored non-prefixed speech=...`，不会转发给 PicoClaw。60 秒没有可处理语音会退出唤醒态。
 
-### 11. 常见排障
+### 12. 常见排障
 
 | 现象 | 检查 |
 | --- | --- |
@@ -385,8 +492,11 @@ voice-pet start --no-gateway
 | 没有播放声音 | 跑 `aplay -l`、`aplay -L`，确认 `--playback-device` 能被 `aplay -D` 使用 |
 | 蓝牙连接失败 | 先用 `bluetoothctl connect <BT_MAC>` 和 `aplay -L | grep -i bluealsa` 确认系统层可用 |
 | 回复太长或太慢 | 使用 `--spoken-reply-first-sentence`，并保持 PicoClaw 回复 prompt 简短 |
+| 点歌没反应 | 跑 `voice-pet logs --target gateway -f`，确认 PicoClaw 已加载 `netease-music-cli` 和 `netease-music-assistant` |
+| 搜到歌但不播放 | 跑 `ncm-cli state`、`pgrep -a mpv`、`tail -n 120 ~/.config/ncm-cli/app.log`，排查 `ncm-cli` 播放器 daemon |
+| 网易云请求 502 或音频 URL 无法访问 | 清掉代理环境后重试，或确认 `voice-pet start` 启动的 gateway 环境里没有 `HTTP_PROXY/HTTPS_PROXY/ALL_PROXY` |
 
-### 12. 可选：systemd 用户服务
+### 13. 可选：systemd 用户服务
 
 仓库里有 `voice-pet.service` 示例。它默认假设代码安装在 `~/.picoclaw/voice-pet`；如果你的仓库在别的路径，先修改 service 里的 `WorkingDirectory` 和 `PYTHONPATH`。
 
