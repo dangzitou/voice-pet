@@ -346,7 +346,7 @@ voice-pet start --no-gateway
 | `voice-pet status` | 查看 gateway/voice-pet 进程和健康状态 |
 | `voice-pet logs -f` | 实时查看 voice-pet 日志 |
 | `voice-pet logs --target gateway -f` | 实时查看 PicoClaw gateway 日志 |
-| `voice-pet mic-test` | 实时显示麦克风音量条；超过阈值后收完整段音频并输出 MiMo ASR 转文字结果 |
+| `voice-pet mic-test` | 实时显示一行麦克风音量条；超过阈值后收完整段音频并输出 MiMo ASR 结果；会自动临时暂停/恢复 voice-pet |
 | `voice-pet mic-test --no-asr` | 只看麦克风音量条，不调用 ASR |
 | `voice-pet mic-test --list-devices` | 列出 ALSA 录音设备 |
 | `voice-pet config show` | 查看当前模型、音频和 runtime 配置 |

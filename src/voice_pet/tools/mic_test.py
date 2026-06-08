@@ -27,7 +27,7 @@ def main() -> None:
     parser.add_argument("--channels", type=int, default=0, help="channel count, default from config")
     parser.add_argument("--chunk-ms", type=int, default=100, help="meter refresh chunk in milliseconds")
     parser.add_argument("--duration", type=float, default=0.0, help="seconds to run; 0 means run until Ctrl+C")
-    parser.add_argument("--scale", type=float, default=4000.0, help="RMS value that fills the meter")
+    parser.add_argument("--scale", type=float, default=0.0, help="RMS value that fills the meter; default is threshold * 4")
     parser.add_argument("--threshold", type=float, default=0.0, help="active threshold; default from config")
     parser.add_argument("--silence-threshold", type=float, default=0.0, help="RMS treated as silence; default from config")
     parser.add_argument("--silence-seconds", type=float, default=0.0, help="seconds of silence to end ASR capture")
@@ -95,7 +95,7 @@ def main() -> None:
     chunk_ms = max(20, args.chunk_ms)
     chunk_frames = max(1, int(sample_rate * chunk_ms / 1000))
     chunk_bytes = chunk_frames * channels * 2
-    scale = max(1.0, args.scale)
+    scale = max(1.0, args.scale or threshold * 4 or 1200.0)
     width = max(8, args.width)
     max_seconds = None if args.max_seconds <= 0 else args.max_seconds
     pre_roll_chunks = max(0, int(args.pre_roll_seconds * 1000 / chunk_ms))
@@ -119,7 +119,8 @@ def main() -> None:
     utterance_frames: list[bytes] = []
     utterance_peak_rms = 0.0
     utterance_index = 0
-    futures: list[Future[None]] = []
+    futures: list[Future[str]] = []
+    last_event = ""
     executor = ThreadPoolExecutor(max_workers=1) if asr is not None else None
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if proc.stdout is None:
@@ -146,10 +147,8 @@ def main() -> None:
                     utterance_peak_rms = rms
                     utterance_frames = list(pre_roll)
                     utterance_frames.append(chunk)
-                    _print_event(
-                        args.line,
-                        f"[mic-test] speech_start rms={rms:.1f} peak={peak} threshold={threshold:.0f}",
-                    )
+                    last_event = f"speech_start rms={rms:.1f}"
+                    _print_event(args.line, f"[mic-test] {last_event} peak={peak} threshold={threshold:.0f}")
                 else:
                     if pre_roll_chunks:
                         pre_roll.append(chunk)
@@ -171,15 +170,13 @@ def main() -> None:
                     utterance_index += 1
                     wav_path = output_dir / f"utterance-{utterance_index:03d}.wav"
                     _write_wav(wav_path, utterance_frames, sample_rate, channels)
-                    _print_event(
-                        args.line,
-                        (
-                            f"[mic-test] speech_end reason={end_reason} "
-                            f"duration={elapsed_speech:.2f}s peak_rms={utterance_peak_rms:.1f} "
-                            f"wav={wav_path}"
-                        ),
+                    last_event = (
+                        f"speech_end #{utterance_index:03d} reason={end_reason} "
+                        f"duration={elapsed_speech:.2f}s peak_rms={utterance_peak_rms:.1f}"
                     )
+                    _print_event(args.line, f"[mic-test] {last_event} wav={wav_path}")
                     if asr is not None and executor is not None:
+                        last_event = f"asr #{utterance_index:03d} transcribing"
                         futures.append(
                             executor.submit(_transcribe_and_print, asr, wav_path, utterance_index, args.line)
                         )
@@ -187,7 +184,9 @@ def main() -> None:
                     utterance_frames = []
                     pre_roll.clear()
 
-            _drain_finished_futures(futures)
+            finished_messages = _drain_finished_futures(futures)
+            if finished_messages:
+                last_event = finished_messages[-1]
             elapsed = time.monotonic() - started_at
             line = (
                 f"{elapsed:7.2f}s "
@@ -196,10 +195,12 @@ def main() -> None:
                 f"max_rms={max_rms:7.1f} max_peak={max_peak:5d} "
                 f"dbfs={_dbfs(rms):6.1f} {status}{' REC' if recording else ''}"
             )
+            if last_event:
+                line = f"{line} | {last_event}"
             if args.line:
                 print(line, flush=True)
             else:
-                print("\r" + line, end="", flush=True)
+                print("\r" + _fit_terminal_line(line), end="", flush=True)
     except KeyboardInterrupt:
         pass
     finally:
@@ -230,30 +231,36 @@ def _run(cmd: list[str]) -> None:
 
 
 def _print_event(line_mode: bool, message: str) -> None:
-    prefix = "" if line_mode else "\n"
-    print(prefix + message, flush=True)
+    if line_mode:
+        print(message, flush=True)
 
 
-def _drain_finished_futures(futures: list[Future[None]]) -> None:
+def _drain_finished_futures(futures: list[Future[str]]) -> list[str]:
+    messages = []
     pending = []
     for future in futures:
         if future.done():
-            future.result()
+            messages.append(future.result())
         else:
             pending.append(future)
     futures[:] = pending
+    return messages
 
 
-def _transcribe_and_print(asr: MimoASR, wav_path: Path, index: int, line_mode: bool) -> None:
+def _transcribe_and_print(asr: MimoASR, wav_path: Path, index: int, line_mode: bool) -> str:
     started_at = time.monotonic()
     _print_event(line_mode, f"[asr:{index:03d}] transcribing {wav_path}")
     try:
         text = asr.transcribe_file(str(wav_path))
         elapsed_ms = (time.monotonic() - started_at) * 1000
+        message = f"asr #{index:03d}: {text or '<empty>'} ({elapsed_ms:.0f}ms)"
         _print_event(line_mode, f"[asr:{index:03d}] text={text or '<empty>'} elapsed={elapsed_ms:.0f}ms")
+        return message
     except Exception as exc:
         elapsed_ms = (time.monotonic() - started_at) * 1000
+        message = f"asr #{index:03d} failed ({elapsed_ms:.0f}ms): {exc}"
         _print_event(line_mode, f"[asr:{index:03d}] failed elapsed={elapsed_ms:.0f}ms error={exc}")
+        return message
 
 
 def _pcm_stats(pcm: bytes) -> tuple[float, int]:
@@ -278,6 +285,15 @@ def _dbfs(rms: float) -> float:
     if rms <= 0:
         return -120.0
     return 20 * math.log10(rms / 32768.0)
+
+
+def _fit_terminal_line(line: str) -> str:
+    width = shutil.get_terminal_size(fallback=(120, 24)).columns
+    if width <= 1:
+        return line
+    if len(line) >= width:
+        return line[: width - 1]
+    return line + " " * (width - len(line) - 1)
 
 
 def _write_wav(path: Path, frames: list[bytes], sample_rate: int, channels: int) -> None:

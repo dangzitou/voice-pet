@@ -135,7 +135,29 @@ def _cmd_logs(args: argparse.Namespace) -> None:
 
 
 def _cmd_mic_test(args: argparse.Namespace) -> None:
-    _run_tool_module("voice_pet.tools.mic_test", args)
+    env_path = Path(args.env).expanduser()
+    _load_env_file_into_process(env_path)
+    config = load_config(args.config)
+    paths = _runtime_paths(config)
+    env = _child_env(paths.repo_root, env_path)
+
+    voice_pids = _unique_pids(_pid_from_file(paths.voice_pid), *_find_voice_pids())
+    restart_voice = bool(voice_pids)
+    if restart_voice:
+        print("voice-pet is using the microphone; stopping it for mic-test")
+        _terminate_pids("voice-pet", voice_pids)
+
+    cmd = [sys.executable, "-m", "voice_pet.tools.mic_test"]
+    if args.config != DEFAULT_CONFIG_PATH and "--config" not in args.args:
+        cmd.extend(["--config", args.config])
+    cmd.extend(args.args)
+
+    try:
+        raise SystemExit(subprocess.run(cmd, cwd=str(paths.repo_root), env=env, check=False).returncode)
+    finally:
+        if restart_voice:
+            print("restarting voice-pet after mic-test")
+            _start_voice(args.config, paths, env)
 
 
 def _cmd_config(args: argparse.Namespace) -> None:
