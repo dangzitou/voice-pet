@@ -52,7 +52,7 @@ class StateMachineTest(unittest.TestCase):
             self.assertEqual(machine.tts.texts, ["我正在查询天气。"])
             self.assertEqual(len(machine.player.paths), 1)
 
-    def test_waiting_prompt_deduplicates_picoclaw_progress(self) -> None:
+    def test_waiting_prompt_repeats_picoclaw_progress_by_interval(self) -> None:
         with TemporaryDirectory() as tmp:
             machine = VoicePetStateMachine(_base_config(tmp))
             machine.brain = _ProgressBrain(machine.brain_progress_path, delay_seconds=0.22)
@@ -67,7 +67,7 @@ class StateMachineTest(unittest.TestCase):
 
             self.assertEqual(reply, "好了")
             self.assertEqual(machine.tts.texts, ["我正在查询天气。"])
-            self.assertEqual(len(machine.player.paths), 1)
+            self.assertEqual(len(machine.player.paths), 4)
 
     def test_waiting_prompt_interval_increases_to_max(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -169,8 +169,9 @@ class StateMachineTest(unittest.TestCase):
             self.assertFalse((Path(tmp) / "external-audio-defer.json").exists())
             self.assertTrue(machine._external_audio_released_during_progress)
             self.assertIsNone(machine._active_external_audio_ready_path)
+            self.assertEqual(machine.tts.texts, ["正在准备播放。"])
 
-    def test_handle_user_text_swallows_timeout_after_music_progress_release(self) -> None:
+    def test_handle_user_text_speaks_result_when_music_not_active_after_release(self) -> None:
         with TemporaryDirectory() as tmp:
             machine = VoicePetStateMachine(_base_config(tmp))
             machine.tts = _FakeTTS()
@@ -178,9 +179,34 @@ class StateMachineTest(unittest.TestCase):
 
             def fake_reply(user_text: str) -> str:
                 machine._external_audio_released_during_progress = True
-                raise RuntimeError("timeout waiting for reply")
+                return "抱歉，这首歌目前不可播放。"
 
-            with patch.object(machine, "_reply_with_waiting_prompt", fake_reply):
+            with patch.object(machine, "_reply_with_waiting_prompt", fake_reply), patch.object(
+                machine,
+                "_is_external_audio_active",
+                return_value=False,
+            ):
+                machine._handle_user_text("播放一首歌")
+
+            self.assertEqual(machine.tts.texts, ["抱歉，这首歌目前不可播放。"])
+            self.assertEqual(len(machine.player.paths), 1)
+            self.assertFalse((Path(tmp) / "external-audio-defer.json").exists())
+
+    def test_handle_user_text_skips_result_when_music_active_after_release(self) -> None:
+        with TemporaryDirectory() as tmp:
+            machine = VoicePetStateMachine(_base_config(tmp))
+            machine.tts = _FakeTTS()
+            machine.player = _FakePlayer()
+
+            def fake_reply(user_text: str) -> str:
+                machine._external_audio_released_during_progress = True
+                return "正在播放。"
+
+            with patch.object(machine, "_reply_with_waiting_prompt", fake_reply), patch.object(
+                machine,
+                "_is_external_audio_active",
+                return_value=True,
+            ):
                 machine._handle_user_text("播放一首歌")
 
             self.assertEqual(machine.tts.texts, [])

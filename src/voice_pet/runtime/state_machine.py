@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import io
 import json
 import hashlib
 import re
 import secrets
 import subprocess
 import time
+import wave
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from pathlib import Path
 from typing import Any
@@ -302,17 +304,19 @@ class VoicePetStateMachine:
                 reply = local_reply or self._reply_with_waiting_prompt(user_text)
             except Exception as exc:
                 if self._external_audio_released_during_progress:
-                    print(f"[speak] skipped_reply_after_external_audio_release error={exc}")
+                    print(f"[speak] reply_error_after_external_audio_release={exc}")
+                    if not self._is_external_audio_active():
+                        self.say("主人，音乐这边没有返回结果，你可以换首歌试试。", prefix="reply")
                     return
                 raise
             reply = _format_spoken_reply(reply)
             if not reply:
                 reply = "主人，我刚刚没组织好，再说一次吧。"
-            if self._external_audio_released_during_progress:
-                print(f"[speak] skipped_reply_after_external_audio_release={reply}")
-                return
             if self._is_duplicate_progress_reply(reply):
                 print(f"[speak] skipped_duplicate_progress_reply={reply}")
+                return
+            if self._external_audio_released_during_progress and self._is_external_audio_active():
+                print(f"[speak] skipped_reply_while_external_audio_active={reply}")
                 return
             print(f"[speak] reply={reply}")
             self.say(reply, prefix="reply")
@@ -442,11 +446,8 @@ class VoicePetStateMachine:
     def play_thinking_prompt(self) -> None:
         progress_text = self._read_brain_progress_prompt()
         if progress_text:
-            if progress_text not in self._played_progress_prompts:
-                self._played_progress_prompts.add(progress_text)
-                self._play_progress_prompt(progress_text)
-                return
-            print(f"[think] progress_prompt_skipped_duplicate={progress_text}")
+            self._played_progress_prompts.add(progress_text)
+            self._play_progress_prompt(progress_text)
             return
         prompt_path = self._pick_thinking_prompt_path()
         if prompt_path is None:
@@ -459,18 +460,24 @@ class VoicePetStateMachine:
             print(f"[think] prompt_audio_failed={exc}")
 
     def _play_progress_prompt(self, text: str) -> None:
-        prompt_path = self._progress_prompt_path(text)
+        audio_text = self._progress_prompt_audio_text(text)
+        prompt_path = self._progress_prompt_path(audio_text)
+        is_external_audio_prompt = self._is_external_audio_progress_prompt(text)
         try:
+            if is_external_audio_prompt and _wav_file_duration_seconds(prompt_path) > 2.8:
+                prompt_path.unlink(missing_ok=True)
             if not prompt_path.is_file():
                 prompt_path.parent.mkdir(parents=True, exist_ok=True)
-                audio_bytes = self._time_call("progress_prompt_tts", self.tts.synthesize, text)
+                audio_bytes = self._time_call("progress_prompt_tts", self.tts.synthesize, audio_text)
+                if is_external_audio_prompt:
+                    audio_bytes = _limit_wav_duration(audio_bytes, max_seconds=2.8)
                 prompt_path.write_bytes(audio_bytes)
-            print(f"[think] progress_prompt={text} audio={prompt_path}")
+            print(f"[think] progress_prompt={text} audio_text={audio_text} audio={prompt_path}")
             self._play_file_sync("progress_prompt", prompt_path)
         except Exception as exc:
             print(f"[think] progress_prompt_failed={exc}")
         finally:
-            if self._is_external_audio_progress_prompt(text):
+            if is_external_audio_prompt:
                 self._release_external_audio_after_progress_prompt()
 
     def play_music_pause_prompt(self) -> None:
@@ -545,6 +552,11 @@ class VoicePetStateMachine:
     def _is_external_audio_progress_prompt(self, text: str) -> bool:
         compact = _compact_text(text)
         return "音乐" in compact or "播放" in compact
+
+    def _progress_prompt_audio_text(self, text: str) -> str:
+        if self._is_external_audio_progress_prompt(text):
+            return "正在准备播放。"
+        return text
 
     def _release_external_audio_after_progress_prompt(self) -> None:
         ready_path = self._active_external_audio_ready_path
@@ -939,3 +951,33 @@ def _write_json_atomic(path: Path, payload: dict) -> None:
     tmp_path = path.with_suffix(f"{path.suffix}.tmp")
     tmp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     tmp_path.replace(path)
+
+
+def _wav_file_duration_seconds(path: Path) -> float:
+    try:
+        with wave.open(str(path), "rb") as audio_file:
+            frame_rate = audio_file.getframerate()
+            if frame_rate <= 0:
+                return 0.0
+            return audio_file.getnframes() / frame_rate
+    except (OSError, wave.Error, EOFError):
+        return 0.0
+
+
+def _limit_wav_duration(audio_bytes: bytes, *, max_seconds: float) -> bytes:
+    if max_seconds <= 0:
+        return audio_bytes
+    try:
+        with wave.open(io.BytesIO(audio_bytes), "rb") as source:
+            params = source.getparams()
+            max_frames = int(params.framerate * max_seconds)
+            if max_frames <= 0 or source.getnframes() <= max_frames:
+                return audio_bytes
+            frames = source.readframes(max_frames)
+        output = io.BytesIO()
+        with wave.open(output, "wb") as target:
+            target.setparams(params._replace(nframes=0))
+            target.writeframes(frames)
+        return output.getvalue()
+    except (wave.Error, EOFError, OSError):
+        return audio_bytes
