@@ -291,10 +291,13 @@ aplay ~/.picoclaw/voice-pet/runtime/ack.wav
 voice-pet config set \
   --ack-text-variant "主人，我在。" \
   --ack-text-variant "主人，我在呀。" \
-  --thinking-prompt-delay 3 \
+  --thinking-prompt-delay 5 \
+  --thinking-prompt-max-delay 20 \
   --thinking-prompt-text "主人，我正在想，马上就好。" \
   --thinking-prompt-text "主人，稍等一下，我还在组织回复。"
 ```
+
+等待提示会按递增间隔播放：默认第 1 条等待 5 秒，之后分别等待 10、15、20 秒，达到最大间隔后保持 20 秒一条。
 
 音乐暂停确认也可以配置多条随机话术。第一次触发时会合成到 `~/.picoclaw/voice-pet/runtime/music-control-prompts/`，之后直接播放缓存音频：
 
@@ -466,6 +469,7 @@ voice-pet start --no-gateway
 | `voice-pet mic-test --list-devices` | 列出 ALSA 录音设备 |
 | `voice-pet config show` | 查看当前模型、音频和 runtime 配置 |
 | `voice-pet config set --playback-cooldown 0.5` | 设置每次播放后再开麦前的等待时间 |
+| `voice-pet config set --thinking-prompt-delay 5 --thinking-prompt-max-delay 20` | 设置回复等待提示递增间隔：5、10、15、20、20 秒 |
 | `voice-pet config set --music-pause-prompt-text "已经暂停啦，主人。"` | 追加一条音乐暂停确认随机话术 |
 | `voice-pet config set --wake-silence-seconds 1.0 --utterance-silence-seconds 1.2 --wake-max-seconds 0 --utterance-max-seconds 0` | 持续收完整段人声，`max=0` 表示不按固定时长切段 |
 | `voice-pet demo --text "主人，咋啦"` | 跑一次 MiMo TTS/ASR 调试 demo |

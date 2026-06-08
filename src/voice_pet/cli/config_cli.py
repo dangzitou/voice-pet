@@ -61,6 +61,7 @@ WAKEWORD_FIELDS = {
     "ack_texts": "wakeword.ack_texts",
     "ack_audio_paths": "wakeword.ack_audio_paths",
     "thinking_prompt_delay_seconds": "wakeword.thinking_prompt_delay_seconds",
+    "thinking_prompt_max_delay_seconds": "wakeword.thinking_prompt_max_delay_seconds",
     "thinking_prompt_texts": "wakeword.thinking_prompt_texts",
     "max_extra_chars": "wakeword.max_extra_chars",
     "session_timeout_seconds": "wakeword.session_timeout_seconds",
@@ -164,7 +165,13 @@ def main() -> None:
         "--thinking-prompt-delay",
         dest="thinking_prompt_delay_seconds",
         type=float,
-        help="seconds to wait before playing a random prebuilt thinking prompt while the agent is still replying",
+        help="first thinking prompt delay and incremental step in seconds while the agent is still replying",
+    )
+    set_parser.add_argument(
+        "--thinking-prompt-max-delay",
+        dest="thinking_prompt_max_delay_seconds",
+        type=float,
+        help="maximum interval in seconds between thinking prompts",
     )
     set_parser.add_argument(
         "--thinking-prompt-text",

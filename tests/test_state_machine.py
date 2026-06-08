@@ -22,14 +22,28 @@ class StateMachineTest(unittest.TestCase):
             machine.tts = _FakeTTS()
             machine.player = _FakePlayer()
             machine.thinking_prompt_delay_seconds = 0.05
+            machine.thinking_prompt_max_delay_seconds = 0.2
             machine.thinking_prompt_texts = ["稍等一下"]
             machine.thinking_prompt_paths = machine._prepare_thinking_prompt_paths()
 
             reply = machine._reply_with_waiting_prompt("今天有啥新闻")
 
             self.assertEqual(reply, "好了")
-            self.assertEqual(len(machine.player.paths), 3)
+            self.assertEqual(len(machine.player.paths), 2)
             self.assertEqual(machine.tts.texts, ["稍等一下"])
+
+    def test_waiting_prompt_interval_increases_to_max(self) -> None:
+        with TemporaryDirectory() as tmp:
+            machine = VoicePetStateMachine(_base_config(tmp))
+            machine.thinking_prompt_delay_seconds = 5.0
+            machine.thinking_prompt_max_delay_seconds = 20.0
+
+            intervals = [
+                machine._thinking_prompt_interval_seconds(prompt_number)
+                for prompt_number in range(1, 7)
+            ]
+
+            self.assertEqual(intervals, [5.0, 10.0, 15.0, 20.0, 20.0, 20.0])
 
     def test_zero_recording_max_seconds_uses_safe_defaults(self) -> None:
         with TemporaryDirectory() as tmp:

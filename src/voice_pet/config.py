@@ -31,6 +31,7 @@ def load_config(path: str) -> dict[str, Any]:
     _set_env_override(wakeword, "ack_texts", "VOICE_PET_ACK_TEXTS")
     _set_env_override(wakeword, "ack_audio_paths", "VOICE_PET_ACK_AUDIO_PATHS")
     _set_env_override(wakeword, "thinking_prompt_delay_seconds", "VOICE_PET_THINKING_PROMPT_DELAY_SECONDS")
+    _set_env_override(wakeword, "thinking_prompt_max_delay_seconds", "VOICE_PET_THINKING_PROMPT_MAX_DELAY_SECONDS")
 
     audio = data.setdefault("audio", {})
     _set_env_override(audio, "playback_command", "VOICE_PET_PLAYBACK_COMMAND")

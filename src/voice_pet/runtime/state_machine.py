@@ -93,6 +93,7 @@ class VoicePetStateMachine:
         self.ack_audio_paths = [Path(str(path)).expanduser() for path in ack_audio_paths if str(path).strip()]
         self.ack_variant_paths = self._prepare_ack_variant_paths()
         self.thinking_prompt_delay_seconds = float(wakeword.get("thinking_prompt_delay_seconds", 5.0))
+        self.thinking_prompt_max_delay_seconds = float(wakeword.get("thinking_prompt_max_delay_seconds", 20.0))
         prompt_texts = wakeword.get("thinking_prompt_texts", [])
         if not isinstance(prompt_texts, list):
             prompt_texts = []
@@ -335,7 +336,8 @@ class VoicePetStateMachine:
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(self.brain.reply, user_text)
             prompt_count = 0
-            next_prompt_at = started_at + self.thinking_prompt_delay_seconds
+            prompt_interval_seconds = self._thinking_prompt_interval_seconds(prompt_count + 1)
+            next_prompt_at = started_at + prompt_interval_seconds
 
             while True:
                 try:
@@ -353,13 +355,17 @@ class VoicePetStateMachine:
                 elapsed_ms = (time.monotonic() - started_at) * 1000
                 print(
                     f"[timing] brain_reply_waited={elapsed_ms:.0f}ms "
-                    f"prompt_delay={self.thinking_prompt_delay_seconds:.1f}s "
+                    f"prompt_delay={prompt_interval_seconds:.1f}s "
                     f"prompt_count={prompt_count}"
                 )
                 self.play_thinking_prompt()
-                next_prompt_at += self.thinking_prompt_delay_seconds
-                while next_prompt_at <= time.monotonic():
-                    next_prompt_at += self.thinking_prompt_delay_seconds
+                prompt_interval_seconds = self._thinking_prompt_interval_seconds(prompt_count + 1)
+                next_prompt_at = time.monotonic() + prompt_interval_seconds
+
+    def _thinking_prompt_interval_seconds(self, prompt_number: int) -> float:
+        base_delay = max(0.0, self.thinking_prompt_delay_seconds)
+        max_delay = max(base_delay, self.thinking_prompt_max_delay_seconds)
+        return min(base_delay * max(1, prompt_number), max_delay)
 
     def play_thinking_prompt(self) -> None:
         prompt_path = self._pick_thinking_prompt_path()
