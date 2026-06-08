@@ -200,6 +200,10 @@ def main() -> None:
             if args.line:
                 print(line, flush=True)
             else:
+                if finished_messages:
+                    print("\r" + _fit_terminal_line(""), end="\r", flush=True)
+                    for message in finished_messages:
+                        print(message, flush=True)
                 print("\r" + _fit_terminal_line(line), end="", flush=True)
     except KeyboardInterrupt:
         pass
