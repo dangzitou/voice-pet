@@ -21,6 +21,7 @@ MODEL_FIELDS = {
     "tts_voice": "mimo.tts_voice",
     "tts_format": "mimo.tts_format",
     "tts_style_prompt": "mimo.tts_style_prompt",
+    "tts_chunk_max_chars": "mimo.tts_chunk_max_chars",
 }
 
 
@@ -117,6 +118,12 @@ def main() -> None:
     set_parser.add_argument("--tts-voice", dest="tts_voice", help="TTS voice name")
     set_parser.add_argument("--tts-format", dest="tts_format", help="TTS audio format, for example: wav")
     set_parser.add_argument("--tts-style-prompt", dest="tts_style_prompt", help="TTS style prompt, for example: cute, youthful, natural Chinese delivery")
+    set_parser.add_argument(
+        "--tts-chunk-max-chars",
+        dest="tts_chunk_max_chars",
+        type=int,
+        help="maximum characters per TTS chunk for long spoken replies",
+    )
     set_parser.add_argument("--record-device", dest="record_device", help="ALSA capture device passed to arecord -D")
     set_parser.add_argument("--voice-start-threshold", dest="voice_start_threshold", type=int, help="RMS threshold to start recording")
     set_parser.add_argument("--silence-threshold", dest="silence_threshold", type=int, help="RMS threshold treated as silence")

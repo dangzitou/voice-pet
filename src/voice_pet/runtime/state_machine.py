@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import secrets
 import subprocess
@@ -37,6 +38,9 @@ class VoicePetStateMachine:
 
         self.work_dir = Path(runtime["work_dir"])
         self.work_dir.mkdir(parents=True, exist_ok=True)
+        self.brain_progress_path = self.work_dir / "picoclaw-progress.json"
+        self.external_audio_local_state_path = self.work_dir / "external-audio-local-state.json"
+        self._played_progress_prompts: set[str] = set()
         self.capture = AudioCapture(
             sample_rate=audio["sample_rate"],
             channels=audio["channels"],
@@ -55,6 +59,7 @@ class VoicePetStateMachine:
             timeout,
             mimo.get("tts_style_prompt", ""),
         )
+        self.tts_chunk_max_chars = _positive_int(mimo.get("tts_chunk_max_chars", 55), default=55)
         brain_kind = str(runtime.get("brain", "picoclaw")).strip().lower()
         if brain_kind == "picoclaw":
             token = runtime.get("picoclaw_token", "").strip()
@@ -67,6 +72,7 @@ class VoicePetStateMachine:
                     session_id=runtime.get("picoclaw_session_id", "voice-pet"),
                     timeout_seconds=float(runtime.get("request_timeout_seconds", 120)),
                     node_script=runtime.get("picoclaw_node_script", "~/.picoclaw/voice-pet/pico_bridge_once.js"),
+                    progress_path=str(self.brain_progress_path),
                 )
             )
         elif brain_kind == "direct_llm":
@@ -175,8 +181,17 @@ class VoicePetStateMachine:
             return
         self._previous_idle_text = ""
         self._last_wake_at = time.monotonic()
+        external_audio_status = self._external_audio_status()
+        if _external_audio_can_control(external_audio_status):
+            handled = self._handle_external_audio_speech(wake.cleaned_text, source="idle", status=external_audio_status)
+            if handled or _external_audio_blocks_conversation(external_audio_status):
+                return
+            print(f"[wake] matched alias={wake.alias} with paused audio")
+            self.play_ack()
+            self._run_wake_session(initial_text=wake.cleaned_text)
+            return
         if self._is_external_audio_active():
-            self._handle_external_audio_speech(wake.cleaned_text, source="idle")
+            self._handle_external_audio_speech(wake.cleaned_text, source="idle", status=external_audio_status)
             return
         if self.wake_max_extra_chars >= 0 and len(wake.cleaned_text) > self.wake_max_extra_chars:
             print(f"[idle] ignored wake match with extra text={wake.cleaned_text}")
@@ -242,17 +257,34 @@ class VoicePetStateMachine:
                 print(f"[session] ignored wakeword-only text={user_text}")
                 user_text = ""
                 continue
+            external_audio_status = self._external_audio_status()
+            if _external_audio_can_control(external_audio_status):
+                handled = self._handle_external_audio_speech(
+                    session_wake.cleaned_text,
+                    source="session",
+                    status=external_audio_status,
+                )
+                if handled or _external_audio_blocks_conversation(external_audio_status):
+                    user_text = ""
+                    deadline = time.monotonic() + self.session_timeout_seconds
+                    continue
             if self._is_external_audio_active():
-                self._handle_external_audio_speech(session_wake.cleaned_text, source="session")
+                self._handle_external_audio_speech(session_wake.cleaned_text, source="session", status=external_audio_status)
                 user_text = ""
                 deadline = time.monotonic() + self.session_timeout_seconds
                 continue
             user_text = session_wake.cleaned_text
 
     def _handle_user_text(self, user_text: str) -> None:
-        if self._is_external_audio_active():
-            self._handle_external_audio_speech(user_text, source="handler")
-            return
+        external_audio_status = self._external_audio_status()
+        if _external_audio_can_control(external_audio_status):
+            action = _external_audio_control_action(user_text)
+            if action is not None:
+                self._handle_external_audio_speech(user_text, source="handler", status=external_audio_status)
+                return
+            if _external_audio_blocks_conversation(external_audio_status) and not _is_external_audio_request(user_text):
+                self._handle_external_audio_speech(user_text, source="handler", status=external_audio_status)
+                return
         print(f"[think] user={user_text}")
         defer_ready_path = begin_external_audio_defer(
             self.work_dir,
@@ -274,7 +306,7 @@ class VoicePetStateMachine:
 
     def _is_external_audio_active(self) -> bool:
         status = self._external_audio_status()
-        return status not in {"", "stopped"}
+        return _external_audio_blocks_conversation(status)
 
     def _external_audio_status(self) -> str:
         try:
@@ -300,13 +332,25 @@ class VoicePetStateMachine:
         state = payload.get("state") if isinstance(payload, dict) else {}
         if not isinstance(state, dict):
             return ""
-        return str(state.get("status", "")).strip().lower()
+        status = str(state.get("status", "")).strip().lower()
+        if status == "stopped":
+            self._clear_external_audio_local_state()
+            return status
+        local_status = self._external_audio_local_status()
+        if local_status and status in {"playing", "queued"}:
+            return local_status
+        return status
 
-    def _handle_external_audio_speech(self, text: str, *, source: str) -> None:
+    def _handle_external_audio_speech(self, text: str, *, source: str, status: str = "") -> bool:
+        status = status or self._external_audio_status()
         action = _external_audio_control_action(text)
         if action is None:
+            if _external_audio_blocks_conversation(status) and _is_external_audio_request(text):
+                print(f"[music] new_request while external audio active source={source} text={text}")
+                self._handle_user_text(text)
+                return True
             print(f"[music] ignored while external audio active source={source} text={text}")
-            return
+            return _external_audio_blocks_conversation(status)
 
         print(f"[music] control source={source} action={action} text={text}")
         try:
@@ -325,42 +369,56 @@ class VoicePetStateMachine:
         stdout = result.stdout.strip()
         stderr = result.stderr.strip()
         print(f"[music] control_result action={action} code={result.returncode} stdout={stdout} stderr={stderr}")
-        if action == "pause" and result.returncode == 0:
+        if result.returncode == 0 and action == "pause":
+            self._set_external_audio_local_status("paused")
             self.play_music_pause_prompt()
+        elif result.returncode == 0 and action in {"resume", "stop"}:
+            self._clear_external_audio_local_state()
+        return True
 
     def _reply_with_waiting_prompt(self, user_text: str) -> str:
+        self._clear_brain_progress()
+        self._played_progress_prompts.clear()
         if self.thinking_prompt_delay_seconds <= 0 or not self.thinking_prompt_texts:
-            return self._time_call("brain_reply", self.brain.reply, user_text)
+            try:
+                return self._time_call("brain_reply", self.brain.reply, user_text)
+            finally:
+                self._played_progress_prompts.clear()
+                self._clear_brain_progress()
 
         started_at = time.monotonic()
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(self.brain.reply, user_text)
-            prompt_count = 0
-            prompt_interval_seconds = self._thinking_prompt_interval_seconds(prompt_count + 1)
-            next_prompt_at = started_at + prompt_interval_seconds
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(self.brain.reply, user_text)
+                prompt_count = 0
+                prompt_interval_seconds = self._thinking_prompt_interval_seconds(prompt_count + 1)
+                next_prompt_at = started_at + prompt_interval_seconds
 
-            while True:
-                try:
-                    timeout_seconds = max(0.0, next_prompt_at - time.monotonic())
-                    reply = future.result(timeout=timeout_seconds)
+                while True:
+                    try:
+                        timeout_seconds = max(0.0, next_prompt_at - time.monotonic())
+                        reply = future.result(timeout=timeout_seconds)
+                        elapsed_ms = (time.monotonic() - started_at) * 1000
+                        print(
+                            f"[timing] brain_reply={elapsed_ms:.0f}ms "
+                            f"prompt_count={prompt_count}"
+                        )
+                        return reply
+                    except FutureTimeoutError:
+                        prompt_count += 1
+
                     elapsed_ms = (time.monotonic() - started_at) * 1000
                     print(
-                        f"[timing] brain_reply={elapsed_ms:.0f}ms "
+                        f"[timing] brain_reply_waited={elapsed_ms:.0f}ms "
+                        f"prompt_delay={prompt_interval_seconds:.1f}s "
                         f"prompt_count={prompt_count}"
                     )
-                    return reply
-                except FutureTimeoutError:
-                    prompt_count += 1
-
-                elapsed_ms = (time.monotonic() - started_at) * 1000
-                print(
-                    f"[timing] brain_reply_waited={elapsed_ms:.0f}ms "
-                    f"prompt_delay={prompt_interval_seconds:.1f}s "
-                    f"prompt_count={prompt_count}"
-                )
-                self.play_thinking_prompt()
-                prompt_interval_seconds = self._thinking_prompt_interval_seconds(prompt_count + 1)
-                next_prompt_at = time.monotonic() + prompt_interval_seconds
+                    self.play_thinking_prompt()
+                    prompt_interval_seconds = self._thinking_prompt_interval_seconds(prompt_count + 1)
+                    next_prompt_at = time.monotonic() + prompt_interval_seconds
+        finally:
+            self._played_progress_prompts.clear()
+            self._clear_brain_progress()
 
     def _thinking_prompt_interval_seconds(self, prompt_number: int) -> float:
         base_delay = max(0.0, self.thinking_prompt_delay_seconds)
@@ -368,6 +426,14 @@ class VoicePetStateMachine:
         return min(base_delay * max(1, prompt_number), max_delay)
 
     def play_thinking_prompt(self) -> None:
+        progress_text = self._read_brain_progress_prompt()
+        if progress_text:
+            if progress_text not in self._played_progress_prompts:
+                self._played_progress_prompts.add(progress_text)
+                self._play_progress_prompt(progress_text)
+                return
+            print(f"[think] progress_prompt_skipped_duplicate={progress_text}")
+            return
         prompt_path = self._pick_thinking_prompt_path()
         if prompt_path is None:
             return
@@ -377,6 +443,18 @@ class VoicePetStateMachine:
             self._play_file_sync("think_prompt", prompt_path)
         except Exception as exc:
             print(f"[think] prompt_audio_failed={exc}")
+
+    def _play_progress_prompt(self, text: str) -> None:
+        prompt_path = self._progress_prompt_path(text)
+        try:
+            if not prompt_path.is_file():
+                prompt_path.parent.mkdir(parents=True, exist_ok=True)
+                audio_bytes = self._time_call("progress_prompt_tts", self.tts.synthesize, text)
+                prompt_path.write_bytes(audio_bytes)
+            print(f"[think] progress_prompt={text} audio={prompt_path}")
+            self._play_file_sync("progress_prompt", prompt_path)
+        except Exception as exc:
+            print(f"[think] progress_prompt_failed={exc}")
 
     def play_music_pause_prompt(self) -> None:
         prompt_path = self._pick_music_pause_prompt_path()
@@ -413,6 +491,57 @@ class VoicePetStateMachine:
         if not variants:
             return None
         return secrets.choice(variants)
+
+    def _progress_prompt_path(self, text: str) -> Path:
+        digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+        return self.work_dir / "progress-prompts" / f"progress-{digest}.wav"
+
+    def _read_brain_progress_prompt(self) -> str:
+        try:
+            payload = json.loads(self.brain_progress_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return ""
+        if not isinstance(payload, dict):
+            return ""
+        updated_at = _float_value(payload.get("updated_at"), 0.0)
+        if updated_at and time.time() - updated_at > 180.0:
+            return ""
+        text = _format_progress_prompt(str(payload.get("text", "")))
+        return text
+
+    def _clear_brain_progress(self) -> None:
+        try:
+            self.brain_progress_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def _external_audio_local_status(self) -> str:
+        try:
+            payload = json.loads(self.external_audio_local_state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return ""
+        if not isinstance(payload, dict):
+            return ""
+        updated_at = _float_value(payload.get("updated_at"), 0.0)
+        if updated_at and time.time() - updated_at > 24 * 60 * 60:
+            self._clear_external_audio_local_state()
+            return ""
+        return str(payload.get("status", "")).strip().lower()
+
+    def _set_external_audio_local_status(self, status: str) -> None:
+        try:
+            _write_json_atomic(
+                self.external_audio_local_state_path,
+                {"status": status, "updated_at": time.time()},
+            )
+        except OSError as exc:
+            print(f"[music] local_state_write_failed={exc}")
+
+    def _clear_external_audio_local_state(self) -> None:
+        try:
+            self.external_audio_local_state_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     def _pick_thinking_prompt_path(self) -> Path | None:
         if not self.thinking_prompt_paths:
@@ -455,15 +584,54 @@ class VoicePetStateMachine:
         path.write_bytes(audio_bytes)
 
     def say(self, text: str, prefix: str) -> None:
+        chunks = _split_spoken_chunks(text, max_chars=self.tts_chunk_max_chars)
+        if prefix == "reply" and len(chunks) > 1:
+            self._say_chunks(chunks, prefix)
+            return
         audio_bytes = self._time_call(f"{prefix}_tts", self.tts.synthesize, text)
         audio_path = self.work_dir / f"{prefix}.wav"
         audio_path.write_bytes(audio_bytes)
         self._play_file_sync(prefix, audio_path)
 
-    def _play_file_sync(self, label: str, path: Path) -> None:
+    def _say_chunks(self, chunks: list[str], prefix: str) -> None:
+        chunk_dir = self.work_dir / f"{prefix}-chunks"
+        chunk_dir.mkdir(parents=True, exist_ok=True)
+        print(f"[speak] chunked_tts chunks={len(chunks)}")
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            first_future = executor.submit(
+                self._synthesize_chunk_to_file,
+                chunks[0],
+                chunk_dir / f"{prefix}-001.wav",
+                f"{prefix}_chunk_001",
+            )
+            first_path = first_future.result()
+            rest_futures = [
+                executor.submit(
+                    self._synthesize_chunk_to_file,
+                    chunk,
+                    chunk_dir / f"{prefix}-{index:03d}.wav",
+                    f"{prefix}_chunk_{index:03d}",
+                )
+                for index, chunk in enumerate(chunks[1:], start=2)
+            ]
+            self._play_file_sync(f"{prefix}_chunk_001", first_path, cooldown=not rest_futures)
+            for index, future in enumerate(rest_futures, start=2):
+                chunk_path = future.result()
+                self._play_file_sync(
+                    f"{prefix}_chunk_{index:03d}",
+                    chunk_path,
+                    cooldown=index == len(chunks),
+                )
+
+    def _synthesize_chunk_to_file(self, text: str, path: Path, label: str) -> Path:
+        audio_bytes = self._time_call(f"{label}_tts", self.tts.synthesize, text)
+        path.write_bytes(audio_bytes)
+        return path
+
+    def _play_file_sync(self, label: str, path: Path, *, cooldown: bool = True) -> None:
         self._reset_capture_stream()
         self._time_call(f"{label}_play", self.player.play_file, str(path))
-        if self.playback_cooldown_seconds > 0:
+        if cooldown and self.playback_cooldown_seconds > 0:
             self._time_call(f"{label}_playback_cooldown", time.sleep, self.playback_cooldown_seconds)
         self._reset_capture_stream()
 
@@ -527,9 +695,10 @@ _EMOJI = re.compile(r"[\U00010000-\U0010ffff]")
 _MARKDOWN_NOISE = re.compile(r"[*_`>#~\[\]]+")
 _LEADING_FILLERS = re.compile(r"^(?:[哈啊嗯呃额呵嘿]{1,}|哈哈+|呵呵+|嘿嘿+)[，。,.!?！？；;：:\s]*")
 _SPACES = re.compile(r"\s+")
+_SPOKEN_SENTENCE = re.compile(r"[^。！？!?；;]+[。！？!?；;]?")
 _EXTERNAL_AUDIO_REQUEST = re.compile(r"(?:播放|放首|放一首|点歌|点一首|来一首|听歌|听音乐|播歌|放歌)")
-_EXTERNAL_AUDIO_STOP_REQUEST = re.compile(r"(?:停止播放|暂停播放|关闭音乐|关掉音乐|停止音乐|暂停音乐|停歌|别放|不要放)")
-_EXTERNAL_AUDIO_STOP_CONTROL = re.compile(r"(?:停止播放|关闭音乐|关掉音乐|停止音乐|停歌|停止|关掉|别放|不要放)")
+_EXTERNAL_AUDIO_STOP_REQUEST = re.compile(r"(?:停止播放|结束播放|暂停播放|关闭音乐|关掉音乐|停止音乐|结束音乐|暂停音乐|停歌|别放|别播|不要放|不要播)")
+_EXTERNAL_AUDIO_STOP_CONTROL = re.compile(r"(?:停止播放|结束播放|关闭播放|关掉播放|停止音乐|结束音乐|关闭音乐|关掉音乐|停歌|停止|结束|关闭|关掉|别放|别播|不要放|不要播)")
 _EXTERNAL_AUDIO_PAUSE_CONTROL = re.compile(r"(?:暂停播放|暂停音乐|暂停|先停一下|等一下)")
 _EXTERNAL_AUDIO_RESUME_CONTROL = re.compile(r"(?:继续播放|恢复播放|继续音乐|恢复音乐|继续|恢复|接着放)")
 DEFAULT_MUSIC_PAUSE_PROMPT_TEXTS = [
@@ -549,6 +718,56 @@ DEFAULT_MUSIC_PAUSE_PROMPT_TEXTS = [
 def _format_spoken_reply(text: str) -> str:
     spoken = _clean_spoken_text(text)
     return spoken.strip()
+
+
+def _split_spoken_chunks(text: str, *, max_chars: int = 55) -> list[str]:
+    spoken = _format_spoken_reply(text)
+    if not spoken:
+        return []
+
+    chunks: list[str] = []
+    current = ""
+    for match in _SPOKEN_SENTENCE.finditer(spoken):
+        sentence = match.group(0).strip()
+        if not sentence:
+            continue
+        if len(sentence) > max_chars:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.extend(_split_long_spoken_sentence(sentence, max_chars=max_chars))
+            continue
+        if current and len(current) + len(sentence) > max_chars:
+            chunks.append(current)
+            current = sentence
+        else:
+            current += sentence
+    if current:
+        chunks.append(current)
+    return chunks or [spoken]
+
+
+def _split_long_spoken_sentence(sentence: str, *, max_chars: int) -> list[str]:
+    parts = [part for part in re.split(r"([，,、：:])", sentence) if part]
+    chunks: list[str] = []
+    current = ""
+    for part in parts:
+        if current and len(current) + len(part) > max_chars:
+            chunks.append(current)
+            current = part
+        else:
+            current += part
+    if current:
+        chunks.append(current)
+
+    result: list[str] = []
+    for chunk in chunks:
+        while len(chunk) > max_chars:
+            result.append(chunk[:max_chars])
+            chunk = chunk[max_chars:]
+        if chunk:
+            result.append(chunk)
+    return result
 
 
 def begin_external_audio_defer(
@@ -603,11 +822,29 @@ def _external_audio_control_action(text: str) -> str | None:
     return None
 
 
+def _external_audio_can_control(status: str) -> bool:
+    return status in {"playing", "queued", "paused"}
+
+
+def _external_audio_blocks_conversation(status: str) -> bool:
+    return status in {"playing", "queued"}
+
+
 def _is_external_audio_request(text: str) -> bool:
     compact = _compact_text(text)
     if _EXTERNAL_AUDIO_STOP_REQUEST.search(compact):
         return False
     return bool(_EXTERNAL_AUDIO_REQUEST.search(compact))
+
+
+def _format_progress_prompt(text: str) -> str:
+    spoken = _clean_spoken_text(text)
+    if not spoken:
+        return ""
+    if not spoken.startswith(("我正在", "主人，我正在")):
+        spoken = f"我正在{spoken}"
+    spoken = spoken[:36].rstrip("，,。.")
+    return f"{spoken}。"
 
 
 def _positive_float(value, default: float) -> float:
@@ -616,6 +853,21 @@ def _positive_float(value, default: float) -> float:
     except (TypeError, ValueError):
         return default
     return parsed if parsed > 0 else default
+
+
+def _positive_int(value, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _float_value(value, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _clean_spoken_text(text: str) -> str:

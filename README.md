@@ -159,12 +159,12 @@ voice-pet config set \
   --tts-voice 冰糖 \
   --tts-format wav \
   --tts-style-prompt "请用少女感、可爱、年轻一点的中文语气来读，声音自然，像亲近主人的桌宠，语速轻快一点，但不要夸张做作。" \
+  --tts-chunk-max-chars 55 \
   --language zh \
   --brain picoclaw \
   --picoclaw-ws-url ws://127.0.0.1:18790/pico/ws \
   --picoclaw-session-id voice-pet \
-  --picoclaw-node-script "$(pwd)/pico_bridge_once.js" \
-  --spoken-reply-first-sentence
+  --picoclaw-node-script "$(pwd)/pico_bridge_once.js"
 ```
 
 常用可配置字段：
@@ -177,9 +177,9 @@ voice-pet config set \
 | `--tts-model-name` | MiMo TTS 模型名 |
 | `--tts-voice` | TTS 预置音色，例如 `冰糖`、`茉莉`、`mimo_default` |
 | `--tts-style-prompt` | TTS 风格描述 |
+| `--tts-chunk-max-chars` | 长回复分段 TTS 的每段最大字数，默认 `55` |
 | `--brain picoclaw` | 使用 PicoClaw 作为回复核心 |
 | `--picoclaw-ws-url` | PicoClaw gateway WebSocket 地址 |
-| `--spoken-reply-first-sentence` | 只口播第一句可用回复，降低等待和播报时长 |
 
 ### 5. 配置 PicoClaw gateway 启动方式
 
@@ -297,7 +297,7 @@ voice-pet config set \
   --thinking-prompt-text "主人，稍等一下，我还在组织回复。"
 ```
 
-等待提示会按递增间隔播放：默认第 1 条等待 5 秒，之后分别等待 10、15、20 秒，达到最大间隔后保持 20 秒一条。
+等待提示会按递增间隔播放：默认第 1 条等待 5 秒，之后分别等待 10、15、20 秒，达到最大间隔后保持 20 秒一条。连接 PicoClaw 时，voice-pet 会优先使用可观察的工具进度播报，例如“我正在查网页资料”“我正在处理音乐播放”；不会播出模型隐藏思维链。
 
 音乐暂停确认也可以配置多条随机话术。第一次触发时会合成到 `~/.picoclaw/voice-pet/runtime/music-control-prompts/`，之后直接播放缓存音频：
 
@@ -381,7 +381,7 @@ ncm-cli state
 
 点歌类请求会先由 voice-pet 口播 PicoClaw 的提示，例如“正在播放……”，提示音播完后再释放 `ncm-cli` 启动 `mpv` 正式播放音乐。这样可以避免提示音和音乐同时抢同一个蓝牙/ALSA 输出。
 
-音乐播放期间 voice-pet 仍会保持麦克风监听，但会进入音乐控制模式：只响应带 `小爱` 前缀的播放控制，例如 `小爱暂停播放`、`小爱停止播放`、`小爱继续播放`。其他内容，包括 `小爱阿爸阿爸` 这类非控制语音，会记录为忽略，不会转发给 PicoClaw，也不会打断音乐。暂停成功后会随机播放一条本地缓存提示音，例如“已经暂停啦，主人。”；提示话术可在 `music.pause_prompt_texts` 里配置，默认 10 条。
+音乐播放期间 voice-pet 仍会保持麦克风监听，但会进入音乐控制模式：只响应带 `小爱` 前缀的播放控制，例如 `小爱暂停播放`、`小爱停止播放`、`小爱结束播放`、`小爱继续播放`。其他内容，包括 `小爱阿爸阿爸` 这类非控制语音，会记录为忽略，不会转发给 PicoClaw，也不会打断音乐。新的点歌请求，例如 `小爱播放一首周杰伦的歌`，会转给 PicoClaw 处理。暂停成功后会随机播放一条本地缓存提示音，例如“已经暂停啦，主人。”；提示话术可在 `music.pause_prompt_texts` 里配置，默认 10 条。暂停后可以继续对话，`小爱继续播放` 会恢复音乐。
 
 如果 `ncm-cli play` 显示已经解析到歌曲，但提示 `daemon 无响应` 或没有 `mpv` 进程，这是 `ncm-cli` 本地播放器 daemon 问题，不是 `voice-pet` 的 ASR/TTS 问题。优先检查：
 
@@ -468,6 +468,7 @@ voice-pet start --no-gateway
 | `voice-pet mic-test --no-asr` | 只看麦克风音量条，不调用 ASR |
 | `voice-pet mic-test --list-devices` | 列出 ALSA 录音设备 |
 | `voice-pet config show` | 查看当前模型、音频和 runtime 配置 |
+| `voice-pet config set --tts-chunk-max-chars 45` | 调整长回复分段 TTS 的每段字数；越小越快听到第一段 |
 | `voice-pet config set --playback-cooldown 0.5` | 设置每次播放后再开麦前的等待时间 |
 | `voice-pet config set --thinking-prompt-delay 5 --thinking-prompt-max-delay 20` | 设置回复等待提示递增间隔：5、10、15、20、20 秒 |
 | `voice-pet config set --music-pause-prompt-text "已经暂停啦，主人。"` | 追加一条音乐暂停确认随机话术 |
@@ -503,6 +504,7 @@ voice-pet start --no-gateway
 ```text
 小爱暂停播放
 小爱停止播放
+小爱结束播放
 小爱继续播放
 ```
 
@@ -519,7 +521,7 @@ voice-pet start --no-gateway
 | 误触发或不触发 | 调整 `--voice-start-threshold`、`--silence-threshold`、`--silence-seconds` |
 | 没有播放声音 | 跑 `aplay -l`、`aplay -L`，确认 `--playback-device` 能被 `aplay -D` 使用 |
 | 蓝牙连接失败 | 先用 `bluetoothctl connect <BT_MAC>` 和 `aplay -L | grep -i bluealsa` 确认系统层可用 |
-| 回复太长或太慢 | 使用 `--spoken-reply-first-sentence`，并保持 PicoClaw 回复 prompt 简短 |
+| 回复太长或太慢 | 调小 `--tts-chunk-max-chars`，并保持 PicoClaw 回复 prompt 简短；长回复会完整分段播完 |
 | 点歌没反应 | 跑 `voice-pet logs --target gateway -f`，确认 PicoClaw 已加载 `netease-music-cli` 和 `netease-music-assistant` |
 | 搜到歌但不播放 | 跑 `ncm-cli state`、`pgrep -a mpv`、`tail -n 120 ~/.config/ncm-cli/app.log`，并检查 `~/.picoclaw/voice-pet/runtime/external-audio-*` 是否有未释放的延迟播放信号 |
 | 网易云请求 502 或音频 URL 无法访问 | 清掉代理环境后重试，或确认 `voice-pet start` 启动的 gateway 环境里没有 `HTTP_PROXY/HTTPS_PROXY/ALL_PROXY` |

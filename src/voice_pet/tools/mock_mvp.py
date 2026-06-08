@@ -68,6 +68,7 @@ def main() -> None:
                 session_id=runtime.get("picoclaw_session_id", "voice-pet"),
                 timeout_seconds=float(runtime.get("request_timeout_seconds", 120)),
                 node_script=runtime.get("picoclaw_node_script", "~/.picoclaw/voice-pet/pico_bridge_once.js"),
+                progress_path=str(work_dir / "picoclaw-progress.json"),
             )
         )
     elif brain_kind == "direct_llm":

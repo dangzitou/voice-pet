@@ -154,12 +154,12 @@ voice-pet config set \
   --tts-voice 冰糖 \
   --tts-format wav \
   --tts-style-prompt "请用少女感、可爱、年轻一点的中文语气来读，声音自然，像亲近主人的桌宠，语速轻快一点，但不要夸张做作。" \
+  --tts-chunk-max-chars 55 \
   --language zh \
   --brain picoclaw \
   --picoclaw-ws-url ws://127.0.0.1:18790/pico/ws \
   --picoclaw-session-id voice-pet \
-  --picoclaw-node-script "$(pwd)/pico_bridge_once.js" \
-  --spoken-reply-first-sentence
+  --picoclaw-node-script "$(pwd)/pico_bridge_once.js"
 ```
 
 Common fields:
@@ -172,9 +172,9 @@ Common fields:
 | `--tts-model-name` | MiMo TTS model |
 | `--tts-voice` | preset TTS voice, for example `冰糖`, `茉莉`, or `mimo_default` |
 | `--tts-style-prompt` | TTS style instruction |
+| `--tts-chunk-max-chars` | maximum characters per TTS chunk for long replies, default `55` |
 | `--brain picoclaw` | use PicoClaw as the reply core |
 | `--picoclaw-ws-url` | PicoClaw gateway WebSocket URL |
-| `--spoken-reply-first-sentence` | speak only the first useful sentence to reduce latency and playback time |
 
 ### 5. Configure PicoClaw Gateway Startup
 
@@ -381,7 +381,7 @@ Follow-up speech inside wake mode must also start with `小爱`. Speech without 
 | false triggers or missed speech | Tune `--voice-start-threshold`, `--silence-threshold`, and `--silence-seconds` |
 | no playback | Run `aplay -l` and `aplay -L`; ensure `--playback-device` works with `aplay -D` |
 | Bluetooth cannot connect | First verify `bluetoothctl connect <BT_MAC>` and `aplay -L | grep -i bluealsa` at the system level |
-| replies are too long or slow | Use `--spoken-reply-first-sentence` and keep the PicoClaw reply prompt concise |
+| replies are too long or slow | Lower `--tts-chunk-max-chars` and keep the PicoClaw reply prompt concise; long replies are still spoken in full |
 
 ### 12. Optional: systemd User Service
 

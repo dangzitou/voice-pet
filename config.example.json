@@ -8,7 +8,8 @@
     "language": "zh",
     "tts_voice": "mimo_default",
     "tts_format": "wav",
-    "tts_style_prompt": "请用少女感、可爱、年轻一点的中文语气来读，声音自然，像亲近主人的桌宠，语速轻快一点，但不要夸张做作。"
+    "tts_style_prompt": "请用少女感、可爱、年轻一点的中文语气来读，声音自然，像亲近主人的桌宠，语速轻快一点，但不要夸张做作。",
+    "tts_chunk_max_chars": 55
   },
   "audio": {
     "sample_rate": 16000,
