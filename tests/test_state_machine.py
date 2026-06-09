@@ -52,6 +52,54 @@ class StateMachineTest(unittest.TestCase):
             self.assertEqual(machine.tts.texts, ["我正在查询天气。"])
             self.assertEqual(len(machine.player.paths), 1)
 
+    def test_task_cancel_command_during_brain_wait_stops_reply(self) -> None:
+        with TemporaryDirectory() as tmp:
+            machine = VoicePetStateMachine(_base_config(tmp))
+            brain = _CancellableBrain()
+            machine.brain = brain
+            machine.tts = _FakeTTS()
+            machine.player = _FakePlayer()
+            machine.capture = _OneShotCapture()
+            machine.asr = _OfflineASR(["小爱停下来先"])
+            machine.thinking_prompt_delay_seconds = 0.05
+            machine.thinking_prompt_max_delay_seconds = 0.05
+
+            with patch.object(machine, "_external_audio_status", return_value="stopped"):
+                machine._handle_user_text("帮我查一个很慢的任务")
+
+            self.assertTrue(brain.cancel_seen)
+            self.assertEqual(machine.tts.texts[-1], "好，先停下。")
+            self.assertNotIn("不应该播出的慢任务回复", machine.tts.texts)
+            self.assertGreaterEqual(len(machine.player.paths), 1)
+
+    def test_music_task_cancel_does_not_release_deferred_playback(self) -> None:
+        with TemporaryDirectory() as tmp:
+            machine = VoicePetStateMachine(_base_config(tmp))
+            brain = _CancellableBrain()
+            machine.brain = brain
+            machine.tts = _FakeTTS()
+            machine.player = _FakePlayer()
+            machine.capture = _OneShotCapture()
+            machine.asr = _OfflineASR(["小爱停下来先"])
+            machine.thinking_prompt_delay_seconds = 0.05
+            machine.thinking_prompt_max_delay_seconds = 0.05
+            calls: list[list[str]] = []
+
+            def fake_run(cmd, **kwargs):
+                calls.append(cmd)
+                if cmd == ["ncm-cli", "state"]:
+                    return _Completed(stdout='{"success":true,"state":{"status":"stopped"}}', stderr="", returncode=0)
+                return _Completed(stdout='{"success":true}', stderr="", returncode=0)
+
+            with patch("voice_pet.runtime.state_machine.subprocess.run", fake_run):
+                machine._handle_user_text("播放一首周杰伦的歌")
+
+            self.assertTrue(brain.cancel_seen)
+            self.assertEqual(machine.tts.texts[-1], "好，先停下。")
+            self.assertFalse((Path(tmp) / "external-audio-defer.json").exists())
+            self.assertEqual(list(Path(tmp).glob("external-audio-ready-*.signal")), [])
+            self.assertIn(["ncm-cli", "stop"], calls)
+
     def test_waiting_prompt_repeats_picoclaw_progress_by_interval(self) -> None:
         with TemporaryDirectory() as tmp:
             machine = VoicePetStateMachine(_base_config(tmp))
@@ -93,10 +141,30 @@ class StateMachineTest(unittest.TestCase):
             self.assertEqual(machine.wake_max_seconds, 5.0)
             self.assertEqual(machine.utterance_max_seconds, 20.0)
 
+    def test_managed_gateway_env_uses_current_defer_file(self) -> None:
+        with TemporaryDirectory() as tmp:
+            with patch.dict(
+                "voice_pet.runtime.state_machine.os.environ",
+                {"VOICE_PET_EXTERNAL_AUDIO_DEFER_FILE": "/tmp/stale-defer.json"},
+            ):
+                machine = VoicePetStateMachine(_base_config(tmp))
+
+            self.assertIsNotNone(machine.gateway.env)
+            assert machine.gateway.env is not None
+            self.assertEqual(
+                machine.gateway.env.get("VOICE_PET_EXTERNAL_AUDIO_DEFER_FILE"),
+                str(Path(tmp) / "external-audio-defer.json"),
+            )
+
     def test_spoken_reply_cleanup_does_not_truncate_content(self) -> None:
         reply = "今天新闻主要有三条。第一，A 有新进展。第二，B 引发关注。第三，C 值得继续看。"
 
         self.assertEqual(_format_spoken_reply(reply), reply)
+
+    def test_spoken_reply_cleanup_removes_music_urls(self) -> None:
+        reply = "好嘞，李荣浩《李白》已经在播了，链接在这里， https://music.163.com/song?id=27678655"
+
+        self.assertEqual(_format_spoken_reply(reply), "好嘞，李荣浩《李白》已经在播了")
 
     def test_split_spoken_chunks_keeps_full_reply(self) -> None:
         reply = "今天新闻主要有三条。第一，A 有新进展。第二，B 引发关注。第三，C 值得继续看。"
@@ -137,18 +205,76 @@ class StateMachineTest(unittest.TestCase):
             self.assertEqual(len(list(Path(tmp).glob("external-audio-ready-*.signal"))), 1)
             self.assertFalse((Path(tmp) / "external-audio-defer.json").exists())
 
-    def test_handle_user_text_speaks_informative_music_reply_after_progress(self) -> None:
+    def test_handle_user_text_skips_success_music_reply_without_progress_release(self) -> None:
         with TemporaryDirectory() as tmp:
             machine = VoicePetStateMachine(_base_config(tmp))
             machine.brain = _FakeBrain(reply='正在播放Aaron Smith的"Dancin"。')
             machine.tts = _FakeTTS()
             machine.player = _FakePlayer()
-            machine._played_progress_prompts.add("我正在处理音乐播放。")
 
-            machine._handle_user_text("播放一首歌")
+            with patch.object(machine, "_external_audio_status", return_value="stopped"):
+                machine._handle_user_text("播放一首歌")
 
-            self.assertEqual(machine.tts.texts, ['正在播放Aaron Smith的"Dancin"。'])
+            self.assertEqual(machine.tts.texts, [])
+            self.assertEqual(machine.player.paths, [])
+
+    def test_handle_user_text_speaks_music_clarification_reply(self) -> None:
+        with TemporaryDirectory() as tmp:
+            machine = VoicePetStateMachine(_base_config(tmp))
+            machine.brain = _FakeBrain(reply="你想播放哪首歌？")
+            machine.tts = _FakeTTS()
+            machine.player = _FakePlayer()
+
+            with patch.object(machine, "_external_audio_status", return_value="stopped"):
+                machine._handle_user_text("播放一首歌")
+
+            self.assertEqual(machine.tts.texts, ["你想播放哪首歌？"])
             self.assertEqual(len(machine.player.paths), 1)
+
+    def test_handle_user_text_speaks_timer_reply_that_mentions_playing_music(self) -> None:
+        with TemporaryDirectory() as tmp:
+            machine = VoicePetStateMachine(_base_config(tmp))
+            machine.tts = _FakeTTS()
+            machine.player = _FakePlayer()
+
+            def fake_reply(user_text: str) -> str:
+                machine._external_audio_released_during_progress = True
+                return "好，十分钟之后提醒你放邓紫棋的歌。"
+
+            with patch.object(machine, "_external_audio_status", return_value="stopped"), patch.object(
+                machine,
+                "_reply_with_waiting_prompt",
+                fake_reply,
+            ):
+                machine._handle_user_text("十分钟后提醒我播放邓紫棋的歌")
+
+            self.assertEqual(machine.tts.texts, ["好，十分钟之后提醒你放邓紫棋的歌。"])
+            self.assertEqual(len(machine.player.paths), 1)
+            self.assertFalse((Path(tmp) / "external-audio-defer.json").exists())
+            self.assertEqual(list(Path(tmp).glob("external-audio-ready-*.signal")), [])
+
+    def test_scheduled_music_request_stops_accidental_immediate_playback(self) -> None:
+        with TemporaryDirectory() as tmp:
+            machine = VoicePetStateMachine(_base_config(tmp))
+            machine.brain = _FakeBrain("正在播放 G.E.M.邓紫棋 - 光年之外 在网易云音乐中打开。")
+            machine.tts = _FakeTTS()
+            machine.player = _FakePlayer()
+            calls: list[list[str]] = []
+
+            def fake_run(cmd, **kwargs):
+                calls.append(cmd)
+                return _Completed(stdout='{"success":true}', stderr="", returncode=0)
+
+            with patch.object(machine, "_external_audio_status", return_value="stopped"), patch(
+                "voice_pet.runtime.state_machine.subprocess.run",
+                fake_run,
+            ):
+                machine._handle_user_text("一分钟后播放光年之外")
+
+            self.assertEqual(calls, [["ncm-cli", "stop"]])
+            self.assertEqual(machine.tts.texts, ["好，我不会现在播放，到时间再提醒你。"])
+            self.assertEqual(len(machine.player.paths), 1)
+            self.assertFalse((Path(tmp) / "external-audio-defer.json").exists())
 
     def test_music_progress_prompt_releases_external_audio_before_final_reply(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -169,9 +295,9 @@ class StateMachineTest(unittest.TestCase):
             self.assertFalse((Path(tmp) / "external-audio-defer.json").exists())
             self.assertTrue(machine._external_audio_released_during_progress)
             self.assertIsNone(machine._active_external_audio_ready_path)
-            self.assertEqual(machine.tts.texts, ["正在准备播放。"])
+            self.assertEqual(machine.tts.texts, [])
 
-    def test_handle_user_text_speaks_result_when_music_not_active_after_release(self) -> None:
+    def test_handle_user_text_speaks_music_failure_after_audio_release_when_not_active(self) -> None:
         with TemporaryDirectory() as tmp:
             machine = VoicePetStateMachine(_base_config(tmp))
             machine.tts = _FakeTTS()
@@ -242,6 +368,21 @@ class StateMachineTest(unittest.TestCase):
             self.assertIsNone(ready_path)
             self.assertFalse((work_dir / "external-audio-defer.json").exists())
 
+    def test_external_audio_defer_can_be_forced_for_resume(self) -> None:
+        with TemporaryDirectory() as tmp:
+            work_dir = Path(tmp)
+            defer_file = work_dir / "external-audio-defer.json"
+
+            ready_path = begin_external_audio_defer(
+                work_dir,
+                "继续播放",
+                defer_file=defer_file,
+                force=True,
+            )
+
+            self.assertIsNotNone(ready_path)
+            self.assertTrue(defer_file.is_file())
+
     def test_external_audio_ignores_non_control_text(self) -> None:
         with TemporaryDirectory() as tmp:
             machine = VoicePetStateMachine(_base_config(tmp))
@@ -299,6 +440,80 @@ class StateMachineTest(unittest.TestCase):
             self.assertEqual(machine.brain.requests, [])
             self.assertEqual(machine.tts.texts, [])
 
+    def test_external_audio_resume_control_does_not_fall_through_to_brain_when_stopped(self) -> None:
+        with TemporaryDirectory() as tmp:
+            machine = VoicePetStateMachine(_base_config(tmp))
+            machine.brain = _FakeBrain()
+            machine.tts = _FakeTTS()
+            machine.player = _FakePlayer()
+            calls: list[list[str]] = []
+
+            def fake_run(cmd, **kwargs):
+                calls.append(cmd)
+                if cmd == ["ncm-cli", "voice-pet-cache-status"]:
+                    return _Completed(stdout='{"success":true}', stderr="", returncode=0)
+                return _Completed(stdout='{"success":true}', stderr="", returncode=0)
+
+            with patch.object(machine, "_external_audio_status", return_value="stopped"), patch(
+                "voice_pet.runtime.state_machine.subprocess.run", fake_run
+            ):
+                machine._handle_user_text("继续播放")
+
+            self.assertEqual(calls, [["ncm-cli", "resume"]])
+            self.assertEqual(machine.brain.requests, [])
+            self.assertEqual(machine.tts.texts, [])
+
+    def test_external_audio_resume_uses_last_play_cache_when_state_is_stopped(self) -> None:
+        with TemporaryDirectory() as tmp:
+            machine = VoicePetStateMachine(_base_config(tmp))
+            machine.brain = _FakeBrain()
+            machine.tts = _FakeTTS()
+            machine.player = _FakePlayer()
+            machine.music_last_play_path = Path(tmp) / "last-play.json"
+            machine.music_last_play_path.write_text(
+                json.dumps(
+                    {
+                        "encrypted_id": "encrypted-song-id",
+                        "original_id": "27678655",
+                        "name": "李白",
+                        "artist_name": "李荣浩",
+                        "updated_at": time.time(),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            calls: list[list[str]] = []
+            play_env = {}
+
+            def fake_run(cmd, **kwargs):
+                calls.append(cmd)
+                if cmd[0:2] == ["ncm-cli", "play"]:
+                    play_env.update(kwargs.get("env") or {})
+                return _Completed(stdout='{"success":true}', stderr="", returncode=0)
+
+            with patch.object(machine, "_external_audio_status", return_value="stopped"), patch(
+                "voice_pet.runtime.state_machine.subprocess.run", fake_run
+            ):
+                machine._handle_user_text("继续播放")
+
+            self.assertEqual(calls[0], ["ncm-cli", "voice-pet-cache-status"])
+            self.assertEqual(calls[1], [
+                "ncm-cli",
+                "play",
+                "--song",
+                "--encrypted-id",
+                "encrypted-song-id",
+                "--original-id",
+                "27678655",
+            ])
+            self.assertEqual(machine.brain.requests, [])
+            self.assertEqual(machine.tts.texts, ["继续播放。"])
+            self.assertEqual(len(machine.player.paths), 1)
+            self.assertEqual(play_env.get("VOICE_PET_NCM_CACHE_ONLY"), "1")
+            self.assertEqual(play_env.get("VOICE_PET_EXTERNAL_AUDIO_DEFER_FILE"), str(Path(tmp) / "external-audio-defer.json"))
+            self.assertEqual(len(list(Path(tmp).glob("external-audio-ready-*.signal"))), 1)
+            self.assertFalse((Path(tmp) / "external-audio-defer.json").exists())
+
     def test_external_audio_new_music_request_is_forwarded_while_playing(self) -> None:
         with TemporaryDirectory() as tmp:
             machine = VoicePetStateMachine(_base_config(tmp))
@@ -310,8 +525,124 @@ class StateMachineTest(unittest.TestCase):
                 machine._handle_user_text("播放一首周杰伦的歌")
 
             self.assertEqual(machine.brain.requests, ["播放一首周杰伦的歌"])
-            self.assertEqual(machine.tts.texts, ["回复"])
+            self.assertEqual(machine.tts.texts, [])
+            self.assertEqual(len(machine.player.paths), 0)
+
+    def test_music_request_cache_hit_plays_without_brain(self) -> None:
+        with TemporaryDirectory() as tmp:
+            machine = VoicePetStateMachine(_base_config(tmp))
+            machine.brain = _FakeBrain()
+            machine.tts = _FakeTTS()
+            machine.player = _FakePlayer()
+            cache = {
+                "version": 1,
+                "entries": {
+                    "播放李荣浩的李白": {
+                        "text": "播放李荣浩的李白",
+                        "key": "播放李荣浩的李白",
+                        "encrypted_id": "encrypted-song-id",
+                        "original_id": "27678655",
+                        "name": "李白",
+                        "artist_name": "李荣浩",
+                        "updated_at": time.time(),
+                    }
+                },
+            }
+            machine.music_request_cache_path.write_text(json.dumps(cache), encoding="utf-8")
+            calls: list[list[str]] = []
+            play_env = {}
+
+            def fake_run(cmd, **kwargs):
+                calls.append(cmd)
+                if cmd[0:2] == ["ncm-cli", "play"]:
+                    play_env.update(kwargs.get("env") or {})
+                return _Completed(stdout='{"success":true,"message":"queued via mpv"}', stderr="", returncode=0)
+
+            with patch.object(machine, "_external_audio_status", return_value="stopped"), patch(
+                "voice_pet.runtime.state_machine.subprocess.run", fake_run
+            ):
+                machine._handle_user_text("播放李荣浩的李白")
+
+            self.assertEqual(machine.brain.requests, [])
+            self.assertEqual(calls[0], ["ncm-cli", "voice-pet-cache-status"])
+            self.assertEqual(calls[1], [
+                "ncm-cli",
+                "play",
+                "--song",
+                "--encrypted-id",
+                "encrypted-song-id",
+                "--original-id",
+                "27678655",
+            ])
+            self.assertEqual(machine.tts.texts, ["给你放上次那首，李荣浩的《李白》。"])
             self.assertEqual(len(machine.player.paths), 1)
+            self.assertEqual(play_env.get("VOICE_PET_NCM_CACHE_ONLY"), "1")
+            self.assertEqual(play_env.get("VOICE_PET_EXTERNAL_AUDIO_DEFER_FILE"), str(Path(tmp) / "external-audio-defer.json"))
+
+    def test_music_request_cache_hit_ignores_trailing_modal_particle(self) -> None:
+        with TemporaryDirectory() as tmp:
+            machine = VoicePetStateMachine(_base_config(tmp))
+            machine.brain = _FakeBrain()
+            machine.tts = _FakeTTS()
+            machine.player = _FakePlayer()
+            cache = {
+                "version": 1,
+                "entries": {
+                    "放首歌": {
+                        "text": "放首歌",
+                        "key": "放首歌",
+                        "encrypted_id": "encrypted-song-id",
+                        "original_id": "27678655",
+                        "name": "光年之外",
+                        "artist_name": "G.E.M.邓紫棋",
+                        "updated_at": time.time(),
+                    }
+                },
+            }
+            machine.music_request_cache_path.write_text(json.dumps(cache), encoding="utf-8")
+            calls: list[list[str]] = []
+
+            def fake_run(cmd, **kwargs):
+                calls.append(cmd)
+                return _Completed(stdout='{"success":true,"message":"queued via mpv"}', stderr="", returncode=0)
+
+            with patch.object(machine, "_external_audio_status", return_value="stopped"), patch(
+                "voice_pet.runtime.state_machine.subprocess.run", fake_run
+            ):
+                machine._handle_user_text("放首歌呗")
+
+            self.assertEqual(machine.brain.requests, [])
+            self.assertEqual(calls[0], ["ncm-cli", "voice-pet-cache-status"])
+            self.assertEqual(calls[1][0:2], ["ncm-cli", "play"])
+
+    def test_music_request_cache_miss_falls_back_to_brain_and_remembers_last_play(self) -> None:
+        with TemporaryDirectory() as tmp:
+            machine = VoicePetStateMachine(_base_config(tmp))
+            machine.brain = _FakeBrain("正在播放李荣浩的李白。")
+            machine.tts = _FakeTTS()
+            machine.player = _FakePlayer()
+            machine.music_last_play_path = Path(tmp) / "last-play.json"
+            machine.music_last_play_path.write_text(
+                json.dumps(
+                    {
+                        "encrypted_id": "encrypted-song-id",
+                        "original_id": "27678655",
+                        "name": "李白",
+                        "artist_name": "李荣浩",
+                        "updated_at": time.time(),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(machine, "_external_audio_status", return_value="stopped"):
+                machine._handle_user_text("播放李荣浩的李白")
+
+            self.assertEqual(machine.brain.requests, ["播放李荣浩的李白"])
+            payload = json.loads(machine.music_request_cache_path.read_text(encoding="utf-8"))
+            entry = payload["entries"]["播放李荣浩的李白"]
+            self.assertEqual(entry["encrypted_id"], "encrypted-song-id")
+            self.assertEqual(entry["original_id"], "27678655")
 
     def test_paused_external_audio_allows_conversation(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -344,7 +675,9 @@ class StateMachineTest(unittest.TestCase):
 
     def test_external_audio_control_action_understands_stop_words(self) -> None:
         self.assertEqual(_external_audio_control_action("结束播放"), "stop")
-        self.assertEqual(_external_audio_control_action("别播了"), "stop")
+        self.assertEqual(_external_audio_control_action("别播歌了"), "stop")
+        self.assertEqual(_external_audio_control_action("停下来先"), "stop")
+        self.assertIsNone(_external_audio_control_action("不要放弃"))
 
     def test_music_pause_control_from_idle_allows_extra_text(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -370,6 +703,166 @@ class StateMachineTest(unittest.TestCase):
             self.assertEqual(machine.brain.requests, [])
             self.assertEqual(len(machine.tts.texts), 1)
             self.assertEqual(machine.player.paths, [str(machine.music_pause_prompt_paths[0])])
+
+    def test_music_resume_control_from_idle_with_stopped_state_does_not_enter_brain(self) -> None:
+        with TemporaryDirectory() as tmp:
+            machine = VoicePetStateMachine(_base_config(tmp))
+            machine.brain = _FakeBrain()
+            machine.tts = _FakeTTS()
+            machine.player = _FakePlayer()
+            machine.capture = _OneShotCapture()
+            machine.asr = _OfflineASR(["小爱继续播放"])
+            machine.wake_max_extra_chars = 1
+            calls: list[list[str]] = []
+
+            def fake_run(cmd, **kwargs):
+                calls.append(cmd)
+                return _Completed(stdout='{"success":true}', stderr="", returncode=0)
+
+            with patch.object(machine, "_external_audio_status", return_value="stopped"), patch(
+                "voice_pet.runtime.state_machine.subprocess.run", fake_run
+            ):
+                machine.run_once()
+
+            self.assertEqual(calls, [["ncm-cli", "resume"]])
+            self.assertEqual(machine.brain.requests, [])
+            self.assertEqual(machine.tts.texts, [])
+
+    def test_music_cache_ack_playback_failure_does_not_raise_or_block_ready_signal(self) -> None:
+        with TemporaryDirectory() as tmp:
+            machine = VoicePetStateMachine(_base_config(tmp))
+            machine.brain = _FakeBrain()
+            machine.tts = _FakeTTS()
+            machine.player = _FailingPlayer()
+            cache = {
+                "version": 1,
+                "entries": {
+                    "播放李荣浩的李白": {
+                        "text": "播放李荣浩的李白",
+                        "key": "播放李荣浩的李白",
+                        "encrypted_id": "encrypted-song-id",
+                        "original_id": "27678655",
+                        "name": "李白",
+                        "artist_name": "李荣浩",
+                        "updated_at": time.time(),
+                    }
+                },
+            }
+            machine.music_request_cache_path.write_text(json.dumps(cache), encoding="utf-8")
+
+            def fake_run(cmd, **kwargs):
+                return _Completed(stdout='{"success":true,"message":"queued via mpv"}', stderr="", returncode=0)
+
+            with patch.object(machine, "_external_audio_status", return_value="stopped"), patch(
+                "voice_pet.runtime.state_machine.subprocess.run", fake_run
+            ):
+                machine._handle_user_text("播放李荣浩的李白")
+
+            self.assertEqual(machine.brain.requests, [])
+            self.assertEqual(machine.tts.texts, ["给你放上次那首，李荣浩的《李白》。"])
+            self.assertEqual(len(list(Path(tmp).glob("external-audio-ready-*.signal"))), 1)
+            self.assertFalse((Path(tmp) / "external-audio-defer.json").exists())
+
+    def test_stop_now_control_from_idle_with_stopped_state_does_not_enter_brain(self) -> None:
+        with TemporaryDirectory() as tmp:
+            machine = VoicePetStateMachine(_base_config(tmp))
+            machine.brain = _FakeBrain()
+            machine.tts = _FakeTTS()
+            machine.player = _FakePlayer()
+            machine.capture = _OneShotCapture()
+            machine.asr = _OfflineASR(["小爱停下来先"])
+            machine.wake_max_extra_chars = 1
+            calls: list[list[str]] = []
+
+            def fake_run(cmd, **kwargs):
+                calls.append(cmd)
+                return _Completed(stdout='{"success":true}', stderr="", returncode=0)
+
+            with patch.object(machine, "_external_audio_status", return_value="stopped"), patch(
+                "voice_pet.runtime.state_machine.subprocess.run", fake_run
+            ):
+                machine.run_once()
+
+            self.assertEqual(calls, [["ncm-cli", "stop"]])
+            self.assertEqual(machine.brain.requests, [])
+            self.assertEqual(machine.tts.texts, [])
+
+    def test_external_audio_control_failure_is_logged_and_does_not_raise(self) -> None:
+        with TemporaryDirectory() as tmp:
+            machine = VoicePetStateMachine(_base_config(tmp))
+            machine.brain = _FakeBrain()
+            machine.tts = _FakeTTS()
+            machine.player = _FakePlayer()
+
+            def fake_run(cmd, **kwargs):
+                return _Completed(stdout="", stderr="boom", returncode=2)
+
+            with patch.object(machine, "_external_audio_status", return_value="playing"), patch(
+                "voice_pet.runtime.state_machine.subprocess.run", fake_run
+            ):
+                handled = machine._handle_external_audio_speech("停止播放", source="test", status="playing")
+
+            self.assertTrue(handled)
+            self.assertEqual(machine.brain.requests, [])
+            self.assertEqual(machine.tts.texts, [])
+
+    def test_external_audio_control_os_error_is_handled_without_falling_through(self) -> None:
+        with TemporaryDirectory() as tmp:
+            machine = VoicePetStateMachine(_base_config(tmp))
+            machine.brain = _FakeBrain()
+            machine.tts = _FakeTTS()
+            machine.player = _FakePlayer()
+
+            def fake_run(cmd, **kwargs):
+                raise OSError("missing ncm-cli")
+
+            with patch.object(machine, "_external_audio_status", return_value="playing"), patch(
+                "voice_pet.runtime.state_machine.subprocess.run", fake_run
+            ):
+                handled = machine._handle_external_audio_speech("停止播放", source="test", status="playing")
+
+            self.assertTrue(handled)
+            self.assertEqual(machine.brain.requests, [])
+            self.assertEqual(machine.tts.texts, [])
+
+    def test_music_cache_play_failure_falls_back_to_brain_without_crashing(self) -> None:
+        with TemporaryDirectory() as tmp:
+            machine = VoicePetStateMachine(_base_config(tmp))
+            machine.brain = _FakeBrain("换一首试试。")
+            machine.tts = _FakeTTS()
+            machine.player = _FakePlayer()
+            cache = {
+                "version": 1,
+                "entries": {
+                    "播放李荣浩的李白": {
+                        "text": "播放李荣浩的李白",
+                        "key": "播放李荣浩的李白",
+                        "encrypted_id": "encrypted-song-id",
+                        "original_id": "27678655",
+                        "name": "李白",
+                        "artist_name": "李荣浩",
+                        "updated_at": time.time(),
+                    }
+                },
+            }
+            machine.music_request_cache_path.write_text(json.dumps(cache), encoding="utf-8")
+            calls: list[list[str]] = []
+
+            def fake_run(cmd, **kwargs):
+                calls.append(cmd)
+                if cmd == ["ncm-cli", "voice-pet-cache-status"]:
+                    return _Completed(stdout='{"success":true}', stderr="", returncode=0)
+                return _Completed(stdout='{"success":false}', stderr="expired", returncode=2)
+
+            with patch.object(machine, "_external_audio_status", return_value="stopped"), patch(
+                "voice_pet.runtime.state_machine.subprocess.run", fake_run
+            ):
+                machine._handle_user_text("播放李荣浩的李白")
+
+            self.assertEqual(machine.brain.requests, ["播放李荣浩的李白"])
+            self.assertEqual(machine.tts.texts, ["换一首试试。"])
+            payload = json.loads(machine.music_request_cache_path.read_text(encoding="utf-8"))
+            self.assertNotIn("播放李荣浩的李白", payload["entries"])
 
 
 def _base_config(work_dir: str) -> dict:
@@ -400,6 +893,9 @@ def _base_config(work_dir: str) -> dict:
             "ack_text": "主人，咋啦",
             "thinking_prompt_delay_seconds": 0.05,
             "thinking_prompt_texts": ["稍等一下"],
+        },
+        "music": {
+            "last_play_path": str(Path(work_dir) / "last-play.json"),
         },
         "runtime": {
             "work_dir": work_dir,
@@ -435,6 +931,27 @@ class _ProgressBrain:
         return "好了"
 
 
+class _CancellableBrain:
+    def __init__(self) -> None:
+        self.cancel_seen = False
+        self.requests: list[str] = []
+
+    def reply(self, text: str) -> str:
+        self.requests.append(text)
+        time.sleep(0.16)
+        return "不应该播出的慢任务回复"
+
+    def reply_with_cancel(self, text: str, cancel_event) -> str:
+        self.requests.append(text)
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            if cancel_event.is_set():
+                self.cancel_seen = True
+                return "不应该播出的慢任务回复"
+            time.sleep(0.01)
+        return "不应该播出的慢任务回复"
+
+
 class _FakeBrain:
     def __init__(self, reply: str = "回复") -> None:
         self.requests: list[str] = []
@@ -461,6 +978,12 @@ class _FakePlayer:
     def play_file(self, path: str) -> None:
         assert Path(path).is_file()
         self.paths.append(path)
+
+
+class _FailingPlayer:
+    def play_file(self, path: str) -> None:
+        assert Path(path).is_file()
+        raise RuntimeError("playback device busy")
 
 
 class _OneShotCapture:

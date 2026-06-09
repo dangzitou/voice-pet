@@ -220,7 +220,7 @@ def main() -> None:
     set_parser.add_argument(
         "--picoclaw-node-script",
         dest="picoclaw_node_script",
-        help="path to pico_bridge_once.js",
+        help="path to pico_bridge_session.js",
     )
     gateway_management = set_parser.add_mutually_exclusive_group()
     gateway_management.add_argument(

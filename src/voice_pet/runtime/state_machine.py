@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import hashlib
+import os
 import re
 import secrets
 import subprocess
@@ -10,6 +11,7 @@ import time
 import wave
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from pathlib import Path
+from threading import Event, Lock
 from typing import Any
 
 from ..audio.capture import AudioCapture
@@ -40,11 +42,17 @@ class VoicePetStateMachine:
 
         self.work_dir = Path(runtime["work_dir"])
         self.work_dir.mkdir(parents=True, exist_ok=True)
+        self._speech_lock = Lock()
         self.brain_progress_path = self.work_dir / "picoclaw-progress.json"
         self.external_audio_local_state_path = self.work_dir / "external-audio-local-state.json"
+        self.music_request_cache_path = self.work_dir / "music-request-cache.json"
+        last_play_path = str(music.get("last_play_path", "~/.config/ncm-cli/voice-pet-last-play.json")).strip()
+        self.music_last_play_path = Path(last_play_path).expanduser()
+        self._music_cache_bridge_supported: bool | None = None
         self._played_progress_prompts: set[str] = set()
         self._active_external_audio_ready_path: Path | None = None
         self._external_audio_released_during_progress = False
+        self._task_cancel_requested = False
         self.capture = AudioCapture(
             sample_rate=audio["sample_rate"],
             channels=audio["channels"],
@@ -75,9 +83,10 @@ class VoicePetStateMachine:
                     token=token,
                     session_id=runtime.get("picoclaw_session_id", "voice-pet"),
                     timeout_seconds=float(runtime.get("request_timeout_seconds", 120)),
-                    node_script=runtime.get("picoclaw_node_script", "~/.picoclaw/voice-pet/pico_bridge_once.js"),
+                    node_script=runtime.get("picoclaw_node_script", "~/.picoclaw/voice-pet/pico_bridge_session.js"),
                     progress_path=str(self.brain_progress_path),
-                )
+                ),
+                on_push_message=self._handle_brain_push_message,
             )
         elif brain_kind == "direct_llm":
             self.brain = DirectLLMAdapter(api_key, mimo["api_base"], mimo["llm_model"], timeout)
@@ -87,7 +96,9 @@ class VoicePetStateMachine:
             command=audio.get("playback_command", "aplay"),
             device=audio.get("playback_device", ""),
         )
-        self.gateway = PicoClawGatewayProcess(runtime)
+        self.external_audio_defer_file = self.work_dir / "external-audio-defer.json"
+        self.external_audio_defer_seconds = float(runtime.get("external_audio_defer_seconds", 180.0))
+        self.gateway = PicoClawGatewayProcess(runtime, env=self._gateway_env())
         self.router = build_default_router() if runtime.get("enable_local_actions", False) else None
         self.detector = WakewordDetector(wakeword.get("aliases", []))
         self.ack_text = wakeword.get("ack_text", "主人，咋啦")
@@ -137,10 +148,19 @@ class VoicePetStateMachine:
         )
         self.playback_cooldown_seconds = max(0.0, float(audio.get("playback_cooldown_seconds", 0.5)))
         self.poll_interval_seconds = float(runtime.get("poll_interval_seconds", 0.2))
-        self.external_audio_defer_file = self.work_dir / "external-audio-defer.json"
-        self.external_audio_defer_seconds = float(runtime.get("external_audio_defer_seconds", 180.0))
+        self.task_cancel_start_seconds = max(0.0, float(runtime.get("task_cancel_start_seconds", 0.5)))
+        self.task_cancel_poll_seconds = _positive_float(runtime.get("task_cancel_poll_seconds", 0.5), default=0.5)
+        self.task_cancel_record_timeout_seconds = _positive_float(
+            runtime.get("task_cancel_record_timeout_seconds", 0.1),
+            default=0.1,
+        )
         self._last_wake_at = 0.0
         self._previous_idle_text = ""
+
+    def _gateway_env(self) -> dict[str, str]:
+        env = os.environ.copy()
+        env["VOICE_PET_EXTERNAL_AUDIO_DEFER_FILE"] = str(self.external_audio_defer_file)
+        return env
 
     def run(self) -> None:
         print(f"[voice-pet] started, waiting for wakeword... mode={self.listen_mode}")
@@ -156,6 +176,9 @@ class VoicePetStateMachine:
                     time.sleep(1.0)
         finally:
             self._close_capture()
+            close_brain = getattr(self.brain, "close", None)
+            if callable(close_brain):
+                close_brain()
             self.gateway.stop()
 
     def run_once(self) -> None:
@@ -196,6 +219,10 @@ class VoicePetStateMachine:
             return
         if self._is_external_audio_active():
             self._handle_external_audio_speech(wake.cleaned_text, source="idle", status=external_audio_status)
+            return
+        if wake.cleaned_text and _is_explicit_external_audio_control(wake.cleaned_text):
+            print(f"[wake] matched alias={wake.alias} command={wake.cleaned_text}")
+            self._handle_user_text(wake.cleaned_text)
             return
         if self.wake_max_extra_chars >= 0 and len(wake.cleaned_text) > self.wake_max_extra_chars:
             print(f"[idle] ignored wake match with extra text={wake.cleaned_text}")
@@ -281,8 +308,14 @@ class VoicePetStateMachine:
 
     def _handle_user_text(self, user_text: str) -> None:
         external_audio_status = self._external_audio_status()
+        action = _external_audio_control_action(user_text)
+        if action is not None and (
+            _external_audio_can_control(external_audio_status)
+            or _is_explicit_external_audio_control(user_text)
+        ):
+            self._handle_external_audio_speech(user_text, source="handler", status=external_audio_status)
+            return
         if _external_audio_can_control(external_audio_status):
-            action = _external_audio_control_action(user_text)
             if action is not None:
                 self._handle_external_audio_speech(user_text, source="handler", status=external_audio_status)
                 return
@@ -290,6 +323,9 @@ class VoicePetStateMachine:
                 self._handle_external_audio_speech(user_text, source="handler", status=external_audio_status)
                 return
         print(f"[think] user={user_text}")
+        if self._try_play_cached_music_request(user_text):
+            return
+        request_started_at = time.time()
         defer_ready_path = begin_external_audio_defer(
             self.work_dir,
             user_text,
@@ -298,6 +334,7 @@ class VoicePetStateMachine:
         )
         self._active_external_audio_ready_path = defer_ready_path
         self._external_audio_released_during_progress = False
+        self._task_cancel_requested = False
         try:
             local_reply = self.router.handle(user_text) if self.router else None
             try:
@@ -305,15 +342,46 @@ class VoicePetStateMachine:
             except Exception as exc:
                 if self._external_audio_released_during_progress:
                     print(f"[speak] reply_error_after_external_audio_release={exc}")
-                    if not self._is_external_audio_active():
+                    if _is_external_audio_request(user_text):
+                        if self._is_external_audio_active():
+                            print("[speak] skipped_error_after_music_release")
+                        else:
+                            self.say("主人，音乐这边没有返回结果，你可以换首歌试试。", prefix="reply")
+                    elif not self._is_external_audio_active():
                         self.say("主人，音乐这边没有返回结果，你可以换首歌试试。", prefix="reply")
                     return
                 raise
             reply = _format_spoken_reply(reply)
             if not reply:
                 reply = "主人，我刚刚没组织好，再说一次吧。"
+            if reply == TASK_CANCEL_REPLY:
+                if _is_external_audio_request(user_text):
+                    self._cancel_deferred_external_audio(defer_ready_path)
+                print(f"[speak] task_cancel_reply={reply}")
+                self.say(reply, prefix="reply")
+                return
             if self._is_duplicate_progress_reply(reply):
                 print(f"[speak] skipped_duplicate_progress_reply={reply}")
+                return
+            if _is_scheduled_reminder_request(user_text) and _is_external_audio_success_reply(reply):
+                print(f"[music] scheduled_request_accidental_playback reply={reply}")
+                self._stop_accidental_scheduled_music_playback()
+                correction = "好，我不会现在播放，到时间再提醒你。"
+                print(f"[speak] scheduled_music_correction={correction}")
+                self.say(correction, prefix="reply")
+                return
+            if _is_external_audio_request(user_text) and self._should_skip_external_audio_reply(reply):
+                print(f"[speak] skipped_external_audio_reply={reply}")
+                return
+            if _is_external_audio_request(user_text) and _is_external_audio_success_reply(reply):
+                print(f"[speak] skipped_music_success_reply={reply}")
+                return
+            if self._external_audio_released_during_progress and _is_external_audio_request(user_text):
+                if _is_external_audio_failure_reply(reply) and not self._is_external_audio_active():
+                    print(f"[speak] music_failure_reply_after_audio_release={reply}")
+                    self.say(reply, prefix="reply")
+                    return
+                print(f"[speak] skipped_music_reply_after_audio_release={reply}")
                 return
             if self._external_audio_released_during_progress and self._is_external_audio_active():
                 print(f"[speak] skipped_reply_while_external_audio_active={reply}")
@@ -321,11 +389,14 @@ class VoicePetStateMachine:
             print(f"[speak] reply={reply}")
             self.say(reply, prefix="reply")
         finally:
+            if not self._task_cancel_requested:
+                self._remember_music_request(user_text, request_started_at=request_started_at)
             self._played_progress_prompts.clear()
             if defer_ready_path is not None and self._active_external_audio_ready_path is not None:
                 release_external_audio_defer(defer_ready_path, defer_file=self.external_audio_defer_file)
             self._active_external_audio_ready_path = None
             self._external_audio_released_during_progress = False
+            self._task_cancel_requested = False
 
     def _is_external_audio_active(self) -> bool:
         status = self._external_audio_status()
@@ -376,6 +447,9 @@ class VoicePetStateMachine:
             return _external_audio_blocks_conversation(status)
 
         print(f"[music] control source={source} action={action} text={text}")
+        if action == "resume" and not _external_audio_can_control(status):
+            if self._try_resume_last_external_audio():
+                return True
         try:
             result = self._time_call(
                 f"music_{action}",
@@ -388,7 +462,7 @@ class VoicePetStateMachine:
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             print(f"[music] control_failed action={action} error={exc}")
-            return
+            return True
         stdout = result.stdout.strip()
         stderr = result.stderr.strip()
         print(f"[music] control_result action={action} code={result.returncode} stdout={stdout} stderr={stderr}")
@@ -399,49 +473,431 @@ class VoicePetStateMachine:
             self._clear_external_audio_local_state()
         return True
 
+    def _cancel_deferred_external_audio(self, ready_path: Path | None) -> None:
+        if ready_path is not None:
+            try:
+                ready_path.unlink(missing_ok=True)
+            except OSError as exc:
+                print(f"[audio] external_audio_ready_cancel_failed={exc}")
+        try:
+            self.external_audio_defer_file.unlink(missing_ok=True)
+        except OSError as exc:
+            print(f"[audio] external_audio_defer_cancel_failed={exc}")
+        self._active_external_audio_ready_path = None
+        self._external_audio_released_during_progress = False
+        try:
+            result = subprocess.run(
+                ["ncm-cli", "stop"],
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=5,
+            )
+            print(
+                "[music] cancel_result "
+                f"code={result.returncode} stdout={result.stdout.strip()} stderr={result.stderr.strip()}"
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"[music] cancel_failed error={exc}")
+
+    def _stop_accidental_scheduled_music_playback(self) -> None:
+        try:
+            result = subprocess.run(
+                ["ncm-cli", "stop"],
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=5,
+            )
+            print(
+                "[music] scheduled_stop_result "
+                f"code={result.returncode} stdout={result.stdout.strip()} stderr={result.stderr.strip()}"
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"[music] scheduled_stop_failed error={exc}")
+
+    def _try_resume_last_external_audio(self) -> bool:
+        last_play = self._read_music_last_play()
+        if not last_play:
+            return False
+        encrypted_id = str(last_play.get("encrypted_id", "")).strip()
+        original_id = str(last_play.get("original_id", "")).strip()
+        if not encrypted_id or not original_id:
+            return False
+        if not self._ncm_cache_bridge_supported():
+            return False
+
+        ready_path = begin_external_audio_defer(
+            self.work_dir,
+            "继续播放",
+            defer_file=self.external_audio_defer_file,
+            timeout_seconds=self.external_audio_defer_seconds,
+            force=True,
+        )
+        env = os.environ.copy()
+        env["VOICE_PET_NCM_CACHE_ONLY"] = "1"
+        env["VOICE_PET_EXTERNAL_AUDIO_DEFER_FILE"] = str(self.external_audio_defer_file)
+        try:
+            result = self._time_call(
+                "music_resume_last",
+                subprocess.run,
+                [
+                    "ncm-cli",
+                    "play",
+                    "--song",
+                    "--encrypted-id",
+                    encrypted_id,
+                    "--original-id",
+                    original_id,
+                ],
+                capture_output=True,
+                check=False,
+                env=env,
+                text=True,
+                timeout=8,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"[music] resume_last_failed error={exc}")
+            if ready_path is not None:
+                release_external_audio_defer(ready_path, defer_file=self.external_audio_defer_file)
+            return False
+
+        stdout = result.stdout.strip()
+        stderr = result.stderr.strip()
+        print(f"[music] resume_last_result code={result.returncode} stdout={stdout} stderr={stderr}")
+        if result.returncode != 0:
+            if ready_path is not None:
+                release_external_audio_defer(ready_path, defer_file=self.external_audio_defer_file)
+            return False
+
+        try:
+            try:
+                self.say("继续播放。", prefix="reply")
+            except Exception as exc:
+                print(f"[music] resume_last_ack_failed={exc}")
+        finally:
+            if ready_path is not None:
+                release_external_audio_defer(ready_path, defer_file=self.external_audio_defer_file)
+        return True
+
+    def _try_play_cached_music_request(self, user_text: str) -> bool:
+        if not _is_external_audio_request(user_text):
+            return False
+        entry = self._cached_music_entry(user_text)
+        if not entry:
+            return False
+        encrypted_id = str(entry.get("encrypted_id", "")).strip()
+        original_id = str(entry.get("original_id", "")).strip()
+        if not encrypted_id or not original_id:
+            return False
+        if not self._ncm_cache_bridge_supported():
+            return False
+
+        print(
+            "[music-cache] hit "
+            f"key={_music_request_cache_key(user_text)} "
+            f"name={entry.get('name', '')} artist={entry.get('artist_name', '')}"
+        )
+        ready_path = begin_external_audio_defer(
+            self.work_dir,
+            user_text,
+            defer_file=self.external_audio_defer_file,
+            timeout_seconds=self.external_audio_defer_seconds,
+        )
+        env = os.environ.copy()
+        env["VOICE_PET_NCM_CACHE_ONLY"] = "1"
+        env["VOICE_PET_EXTERNAL_AUDIO_DEFER_FILE"] = str(self.external_audio_defer_file)
+        try:
+            result = self._time_call(
+                "music_cache_play",
+                subprocess.run,
+                [
+                    "ncm-cli",
+                    "play",
+                    "--song",
+                    "--encrypted-id",
+                    encrypted_id,
+                    "--original-id",
+                    original_id,
+                ],
+                capture_output=True,
+                check=False,
+                env=env,
+                text=True,
+                timeout=8,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"[music-cache] play_failed error={exc}")
+            self._drop_music_request_cache(user_text)
+            if ready_path is not None:
+                release_external_audio_defer(ready_path, defer_file=self.external_audio_defer_file)
+            return False
+
+        stdout = result.stdout.strip()
+        stderr = result.stderr.strip()
+        print(f"[music-cache] play_result code={result.returncode} stdout={stdout} stderr={stderr}")
+        if result.returncode != 0:
+            self._drop_music_request_cache(user_text)
+            if ready_path is not None:
+                release_external_audio_defer(ready_path, defer_file=self.external_audio_defer_file)
+            return False
+
+        try:
+            try:
+                self.say(_cached_music_ack_text(entry), prefix="reply")
+            except Exception as exc:
+                print(f"[music-cache] ack_failed={exc}")
+        finally:
+            if ready_path is not None:
+                release_external_audio_defer(ready_path, defer_file=self.external_audio_defer_file)
+        return True
+
+    def _cached_music_entry(self, user_text: str) -> dict[str, Any] | None:
+        key = _music_request_cache_key(user_text)
+        if not key:
+            return None
+        payload = self._read_music_request_cache()
+        entries = payload.get("entries")
+        if not isinstance(entries, dict):
+            return None
+        entry = entries.get(key)
+        if not isinstance(entry, dict):
+            return None
+        updated_at = _float_value(entry.get("updated_at"), 0.0)
+        if updated_at and time.time() - updated_at > 7 * 24 * 60 * 60:
+            self._drop_music_request_cache(user_text)
+            return None
+        return entry
+
+    def _ncm_cache_bridge_supported(self) -> bool:
+        if self._music_cache_bridge_supported is not None:
+            return self._music_cache_bridge_supported
+        try:
+            result = subprocess.run(
+                ["ncm-cli", "voice-pet-cache-status"],
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=1.5,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"[music-cache] bridge_check_failed={exc}")
+            self._music_cache_bridge_supported = False
+            return False
+        self._music_cache_bridge_supported = result.returncode == 0
+        if not self._music_cache_bridge_supported:
+            print("[music-cache] bridge_not_supported")
+        return self._music_cache_bridge_supported
+
+    def _remember_music_request(self, user_text: str, *, request_started_at: float) -> None:
+        if not _is_external_audio_request(user_text):
+            return
+        key = _music_request_cache_key(user_text)
+        if not key:
+            return
+        last_play = self._read_music_last_play()
+        if not last_play:
+            return
+        updated_at = _float_value(last_play.get("updated_at"), 0.0)
+        if updated_at and updated_at < request_started_at - 2.0:
+            print("[music-cache] last_play_stale")
+            return
+        encrypted_id = str(last_play.get("encrypted_id", "")).strip()
+        original_id = str(last_play.get("original_id", "")).strip()
+        if not encrypted_id or not original_id:
+            return
+        payload = self._read_music_request_cache()
+        entries = payload.setdefault("entries", {})
+        if not isinstance(entries, dict):
+            entries = {}
+            payload["entries"] = entries
+        entry = {
+            "text": user_text,
+            "key": key,
+            "encrypted_id": encrypted_id,
+            "original_id": original_id,
+            "name": str(last_play.get("name", "")).strip(),
+            "artist_name": str(last_play.get("artist_name", "")).strip(),
+            "updated_at": time.time(),
+        }
+        entries[key] = entry
+        try:
+            _write_json_atomic(self.music_request_cache_path, payload)
+            print(
+                "[music-cache] remembered "
+                f"key={key} name={entry['name']} artist={entry['artist_name']}"
+            )
+        except OSError as exc:
+            print(f"[music-cache] write_failed={exc}")
+
+    def _drop_music_request_cache(self, user_text: str) -> None:
+        key = _music_request_cache_key(user_text)
+        if not key:
+            return
+        payload = self._read_music_request_cache()
+        entries = payload.get("entries")
+        if isinstance(entries, dict) and key in entries:
+            entries.pop(key, None)
+            try:
+                _write_json_atomic(self.music_request_cache_path, payload)
+            except OSError as exc:
+                print(f"[music-cache] drop_failed={exc}")
+
+    def _read_music_request_cache(self) -> dict[str, Any]:
+        try:
+            payload = json.loads(self.music_request_cache_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {"version": 1, "entries": {}}
+        if not isinstance(payload, dict):
+            return {"version": 1, "entries": {}}
+        payload.setdefault("version", 1)
+        payload.setdefault("entries", {})
+        return payload
+
+    def _read_music_last_play(self) -> dict[str, Any] | None:
+        try:
+            payload = json.loads(self.music_last_play_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
     def _reply_with_waiting_prompt(self, user_text: str) -> str:
         self._clear_brain_progress()
         self._played_progress_prompts.clear()
-        if self.thinking_prompt_delay_seconds <= 0 or not self.thinking_prompt_texts:
-            return self._time_call("brain_reply", self.brain.reply, user_text)
 
         started_at = time.monotonic()
+        cancel_event = Event()
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(self._brain_reply, user_text, cancel_event)
+        wait_for_reply = True
         try:
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(self.brain.reply, user_text)
-                prompt_count = 0
-                prompt_interval_seconds = self._thinking_prompt_interval_seconds(prompt_count + 1)
-                next_prompt_at = started_at + prompt_interval_seconds
+            prompt_count = 0
+            prompt_interval_seconds = self._thinking_prompt_interval_seconds(prompt_count + 1)
+            next_prompt_at = (
+                started_at + prompt_interval_seconds
+                if self.thinking_prompt_delay_seconds > 0 and self.thinking_prompt_texts
+                else float("inf")
+            )
+            next_cancel_poll_at = started_at + self.task_cancel_start_seconds
 
-                while True:
-                    try:
-                        timeout_seconds = max(0.0, next_prompt_at - time.monotonic())
-                        reply = future.result(timeout=timeout_seconds)
-                        elapsed_ms = (time.monotonic() - started_at) * 1000
-                        print(
-                            f"[timing] brain_reply={elapsed_ms:.0f}ms "
-                            f"prompt_count={prompt_count}"
-                        )
-                        return reply
-                    except FutureTimeoutError:
-                        prompt_count += 1
-
+            while True:
+                timeout_seconds = max(0.0, min(next_prompt_at, next_cancel_poll_at) - time.monotonic())
+                try:
+                    reply = future.result(timeout=timeout_seconds)
                     elapsed_ms = (time.monotonic() - started_at) * 1000
+                    print(
+                        f"[timing] brain_reply={elapsed_ms:.0f}ms "
+                        f"prompt_count={prompt_count}"
+                    )
+                    return reply
+                except FutureTimeoutError:
+                    pass
+
+                now = time.monotonic()
+                if now >= next_prompt_at:
+                    prompt_count += 1
+                    elapsed_ms = (now - started_at) * 1000
                     print(
                         f"[timing] brain_reply_waited={elapsed_ms:.0f}ms "
                         f"prompt_delay={prompt_interval_seconds:.1f}s "
                         f"prompt_count={prompt_count}"
                     )
-                    self.play_thinking_prompt()
+                    if self._should_play_waiting_prompt(user_text):
+                        self.play_thinking_prompt()
+                    else:
+                        print("[think] skipped_waiting_prompt external_audio_active")
                     prompt_interval_seconds = self._thinking_prompt_interval_seconds(prompt_count + 1)
                     next_prompt_at = time.monotonic() + prompt_interval_seconds
+
+                if now >= next_cancel_poll_at:
+                    if self._poll_task_cancel(cancel_event):
+                        wait_for_reply = False
+                        try:
+                            future.result(timeout=0.2)
+                        except FutureTimeoutError:
+                            future.cancel()
+                        except Exception as exc:
+                            print(f"[task] cancel_worker_failed={exc}")
+                        return TASK_CANCEL_REPLY
+                    next_cancel_poll_at = time.monotonic() + self.task_cancel_poll_seconds
         finally:
+            executor.shutdown(wait=wait_for_reply, cancel_futures=not wait_for_reply)
             self._clear_brain_progress()
+
+    def _brain_reply(self, user_text: str, cancel_event: Event) -> str:
+        reply_with_cancel = getattr(self.brain, "reply_with_cancel", None)
+        if callable(reply_with_cancel):
+            return reply_with_cancel(user_text, cancel_event)
+        return self.brain.reply(user_text)
+
+    def _poll_task_cancel(self, cancel_event: Event) -> bool:
+        cancel_audio = self.work_dir / "task-cancel-candidate.wav"
+        try:
+            self._time_call(
+                "task_cancel_record",
+                self.capture.record_next_utterance,
+                str(cancel_audio),
+                max_seconds=min(self.utterance_max_seconds, 2.5),
+                min_seconds=0.2,
+                chunk_ms=self.stream_chunk_ms,
+                pre_roll_seconds=self.pre_roll_seconds,
+                start_timeout_seconds=self.task_cancel_record_timeout_seconds,
+                start_threshold=self.voice_start_threshold,
+                silence_threshold=self.silence_threshold,
+                silence_seconds=min(self.utterance_silence_seconds, 0.8),
+            )
+        except TimeoutError:
+            return False
+        except Exception as exc:
+            print(f"[task] cancel_listen_failed={exc}")
+            return False
+
+        try:
+            self._reset_capture_stream()
+            heard = self._time_call("task_cancel_asr", self.asr.transcribe_file, str(cancel_audio)).strip()
+        except Exception as exc:
+            print(f"[task] cancel_asr_failed={exc}")
+            return False
+        if not heard:
+            return False
+        wake = self.detector.detect_prefix(heard)
+        if not wake.matched:
+            print(f"[task] cancel_ignored missing_wake text={heard}")
+            return False
+        if not _is_task_cancel_control(wake.cleaned_text):
+            print(f"[task] cancel_ignored text={wake.cleaned_text}")
+            return False
+        cancel_event.set()
+        self._task_cancel_requested = True
+        print(f"[task] cancel_requested text={wake.cleaned_text}")
+        return True
 
     def _thinking_prompt_interval_seconds(self, prompt_number: int) -> float:
         base_delay = max(0.0, self.thinking_prompt_delay_seconds)
         max_delay = max(base_delay, self.thinking_prompt_max_delay_seconds)
         return min(base_delay * max(1, prompt_number), max_delay)
+
+    def _should_play_waiting_prompt(self, user_text: str) -> bool:
+        if not _is_external_audio_request(user_text):
+            return True
+        if self._is_external_audio_active():
+            return False
+        local_status = self._external_audio_local_status()
+        if _external_audio_blocks_conversation(local_status):
+            return False
+        return True
+
+    def _should_skip_external_audio_reply(self, reply: str) -> bool:
+        if _is_external_audio_failure_reply(reply):
+            return False
+        if _is_external_audio_success_reply(reply):
+            return True
+        if self._is_external_audio_active():
+            return True
+        local_status = self._external_audio_local_status()
+        if _external_audio_blocks_conversation(local_status):
+            return True
+        return False
 
     def play_thinking_prompt(self) -> None:
         progress_text = self._read_brain_progress_prompt()
@@ -464,6 +920,9 @@ class VoicePetStateMachine:
         prompt_path = self._progress_prompt_path(audio_text)
         is_external_audio_prompt = self._is_external_audio_progress_prompt(text)
         try:
+            if is_external_audio_prompt and self._is_external_audio_active():
+                print("[think] skipped_progress_prompt external_audio_active")
+                return
             if is_external_audio_prompt and _wav_file_duration_seconds(prompt_path) > 2.8:
                 prompt_path.unlink(missing_ok=True)
             if not prompt_path.is_file():
@@ -641,14 +1100,25 @@ class VoicePetStateMachine:
         path.write_bytes(audio_bytes)
 
     def say(self, text: str, prefix: str) -> None:
-        chunks = _split_spoken_chunks(text, max_chars=self.tts_chunk_max_chars)
-        if prefix == "reply" and len(chunks) > 1:
-            self._say_chunks(chunks, prefix)
+        with self._speech_lock:
+            chunks = _split_spoken_chunks(text, max_chars=self.tts_chunk_max_chars)
+            if prefix == "reply" and len(chunks) > 1:
+                self._say_chunks(chunks, prefix)
+                return
+            audio_bytes = self._time_call(f"{prefix}_tts", self.tts.synthesize, text)
+            audio_path = self.work_dir / f"{prefix}.wav"
+            audio_path.write_bytes(audio_bytes)
+            self._play_file_sync(prefix, audio_path)
+
+    def _handle_brain_push_message(self, text: str) -> None:
+        spoken = _format_spoken_reply(text)
+        if not spoken:
             return
-        audio_bytes = self._time_call(f"{prefix}_tts", self.tts.synthesize, text)
-        audio_path = self.work_dir / f"{prefix}.wav"
-        audio_path.write_bytes(audio_bytes)
-        self._play_file_sync(prefix, audio_path)
+        print(f"[picoclaw] push_message={spoken}")
+        try:
+            self.say(spoken, prefix="push")
+        except Exception as exc:
+            print(f"[picoclaw] push_message_failed={exc}")
 
     def _say_chunks(self, chunks: list[str], prefix: str) -> None:
         chunk_dir = self.work_dir / f"{prefix}-chunks"
@@ -753,12 +1223,20 @@ _MARKDOWN_NOISE = re.compile(r"[*_`>#~\[\]]+")
 _LEADING_FILLERS = re.compile(r"^(?:[哈啊嗯呃额呵嘿]{1,}|哈哈+|呵呵+|嘿嘿+)[，。,.!?！？；;：:\s]*")
 _SPACES = re.compile(r"\s+")
 _SPOKEN_SENTENCE = re.compile(r"[^。！？!?；;]+[。！？!?；;]?")
+_SPOKEN_URL = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
+_LINK_PHRASE = re.compile(r"[，,。；;\s]*(?:链接(?:在这里|是|如下)?|地址(?:在这里|是|如下)?)[，,：:\s]*")
 _EXTERNAL_AUDIO_REQUEST = re.compile(r"(?:播放|放首|放一首|点歌|点一首|来一首|听歌|听音乐|播歌|放歌)")
-_EXTERNAL_AUDIO_STOP_REQUEST = re.compile(r"(?:停止播放|结束播放|暂停播放|关闭音乐|关掉音乐|停止音乐|结束音乐|暂停音乐|停歌|别放|别播|不要放|不要播)")
-_EXTERNAL_AUDIO_STOP_CONTROL = re.compile(r"(?:停止播放|结束播放|关闭播放|关掉播放|停止音乐|结束音乐|关闭音乐|关掉音乐|停歌|停止|结束|关闭|关掉|别放|别播|不要放|不要播)")
+_SCHEDULED_REMINDER_REQUEST = re.compile(r"(?:提醒|定时|闹钟|倒计时|稍后|过(?:一会|会儿|下)|之后|以后|分钟后|小时后|秒钟后|天后)")
+_EXTERNAL_AUDIO_STOP_REQUEST = re.compile(r"(?:停止播放|结束播放|暂停播放|关闭音乐|关掉音乐|停止音乐|结束音乐|暂停音乐|停歌|别放歌|别播歌|别放音乐|别播音乐|不要放歌|不要播歌|不要放音乐|不要播音乐)")
+_EXTERNAL_AUDIO_STOP_CONTROL = re.compile(r"(?:停止播放|结束播放|关闭播放|关掉播放|停止音乐|结束音乐|关闭音乐|关掉音乐|停歌|停下来|先停下来|停下|先停下|停止|结束|关闭|关掉|别放歌|别播歌|别放音乐|别播音乐|不要放歌|不要播歌|不要放音乐|不要播音乐)")
 _EXTERNAL_AUDIO_PAUSE_CONTROL = re.compile(r"(?:暂停播放|暂停音乐|暂停|先停一下|等一下)")
 _EXTERNAL_AUDIO_RESUME_CONTROL = re.compile(r"(?:继续播放|恢复播放|继续音乐|恢复音乐|继续|恢复|接着放)")
+_EXTERNAL_AUDIO_CONTROL_CONTEXT = re.compile(r"(?:播放|音乐|歌|播|放)")
+_EXTERNAL_AUDIO_FAILURE_REPLY = re.compile(r"(?:失败|找不到|没找到|无法播放|不能播放|不可播放|没有返回|出错|报错|换首歌|换一首)")
+_EXTERNAL_AUDIO_SUCCESS_REPLY = re.compile(r"(?:正在播放|已经(?:在播|播放|开始播放)|给你(?:播放|放)|开始播放)")
+_TASK_CANCEL_CONTROL = re.compile(r"(?:停下来先|先停下来|停下先|先停下|停下来|停下|停止任务|停止执行|取消任务|取消执行|别做了|不要做了)")
 _DUPLICATE_PROGRESS_REPLY_SUFFIXES = {"", "了", "啦", "中", "中啦", "请稍等", "稍等一下"}
+TASK_CANCEL_REPLY = "好，先停下。"
 DEFAULT_MUSIC_PAUSE_PROMPT_TEXTS = [
     "已经暂停啦，主人。",
     "暂停好啦，主人。",
@@ -834,8 +1312,9 @@ def begin_external_audio_defer(
     *,
     defer_file: Path | None = None,
     timeout_seconds: float = 180.0,
+    force: bool = False,
 ) -> Path | None:
-    if not _is_external_audio_request(user_text):
+    if not force and not _is_external_audio_request(user_text):
         return None
 
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -880,6 +1359,37 @@ def _external_audio_control_action(text: str) -> str | None:
     return None
 
 
+def _is_explicit_external_audio_control(text: str) -> bool:
+    compact = _compact_text(text)
+    action = _external_audio_control_action(compact)
+    if action is None:
+        return False
+    if _EXTERNAL_AUDIO_CONTROL_CONTEXT.search(compact):
+        return True
+    if action == "resume" and compact in {"继续", "恢复", "接着放"}:
+        return True
+    if action == "pause" and compact in {"暂停", "先停一下", "等一下"}:
+        return True
+    if action == "stop" and compact in {
+        "停止",
+        "结束",
+        "关闭",
+        "关掉",
+        "停下来",
+        "停下来先",
+        "先停下来",
+        "停下",
+        "停下先",
+        "先停下",
+        "别放",
+        "别播",
+        "不要放",
+        "不要播",
+    }:
+        return True
+    return False
+
+
 def _external_audio_can_control(status: str) -> bool:
     return status in {"playing", "queued", "paused"}
 
@@ -892,7 +1402,31 @@ def _is_external_audio_request(text: str) -> bool:
     compact = _compact_text(text)
     if _EXTERNAL_AUDIO_STOP_REQUEST.search(compact):
         return False
+    if _is_scheduled_reminder_request(compact):
+        return False
     return bool(_EXTERNAL_AUDIO_REQUEST.search(compact))
+
+
+def _is_scheduled_reminder_request(text: str) -> bool:
+    return bool(_SCHEDULED_REMINDER_REQUEST.search(_compact_text(text)))
+
+
+def _is_external_audio_failure_reply(text: str) -> bool:
+    return bool(_EXTERNAL_AUDIO_FAILURE_REPLY.search(_compact_text(text)))
+
+
+def _is_external_audio_success_reply(text: str) -> bool:
+    compact = _compact_text(text)
+    if "?" in text or "？" in text:
+        return False
+    return bool(_EXTERNAL_AUDIO_SUCCESS_REPLY.search(compact)) and not _is_external_audio_failure_reply(compact)
+
+
+def _is_task_cancel_control(text: str) -> bool:
+    compact = _compact_text(text)
+    if _EXTERNAL_AUDIO_CONTROL_CONTEXT.search(compact):
+        return False
+    return bool(_TASK_CANCEL_CONTROL.search(compact))
 
 
 def _format_progress_prompt(text: str) -> str:
@@ -929,15 +1463,38 @@ def _float_value(value, default: float) -> float:
 
 
 def _clean_spoken_text(text: str) -> str:
+    had_url = bool(_SPOKEN_URL.search(text))
+    text = _SPOKEN_URL.sub("", text)
+    text = _LINK_PHRASE.sub("，", text)
     text = _EMOJI.sub("", text)
     text = _MARKDOWN_NOISE.sub("", text)
     text = text.replace("\r", " ").replace("\n", " ")
     text = _SPACES.sub(" ", text).strip()
-    return _LEADING_FILLERS.sub("", text).strip()
+    text = _LEADING_FILLERS.sub("", text).strip()
+    if had_url:
+        text = re.sub(r"[，,；;：:\s]+$", "", text)
+    return text.strip()
 
 
 def _compact_text(text: str) -> str:
     return re.sub(r"[\s，。,.!?！？；;：:、]+", "", text)
+
+
+def _music_request_cache_key(text: str) -> str:
+    compact = _compact_text(text)
+    compact = re.sub(r"^(?:小爱|小艾|小ai|xiaoai)+", "", compact, flags=re.IGNORECASE)
+    compact = re.sub(r"(?:呗|吧|啦|啊|呀|呢|哈)+$", "", compact)
+    return compact.lower()
+
+
+def _cached_music_ack_text(entry: dict[str, Any]) -> str:
+    name = str(entry.get("name", "")).strip()
+    artist = str(entry.get("artist_name", "")).strip()
+    if name and artist:
+        return f"给你放上次那首，{artist}的《{name}》。"
+    if name:
+        return f"给你放上次那首，《{name}》。"
+    return "给你放上次那首。"
 
 
 def _text_list(value: Any, default: list[str]) -> list[str]:

@@ -67,7 +67,7 @@ def main() -> None:
                 token=token,
                 session_id=runtime.get("picoclaw_session_id", "voice-pet"),
                 timeout_seconds=float(runtime.get("request_timeout_seconds", 120)),
-                node_script=runtime.get("picoclaw_node_script", "~/.picoclaw/voice-pet/pico_bridge_once.js"),
+                node_script=runtime.get("picoclaw_node_script", "~/.picoclaw/voice-pet/pico_bridge_session.js"),
                 progress_path=str(work_dir / "picoclaw-progress.json"),
             )
         )

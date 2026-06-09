@@ -61,7 +61,7 @@ src/voice_pet/
     ├── mock_mvp.py
     └── demo_loop.py
 voice-pet                      # user command
-pico_bridge_once.js            # Node WebSocket helper for PicoClaw bridge
+pico_bridge_session.js         # Node persistent WebSocket helper for PicoClaw bridge
 ```
 
 ## Requirements
@@ -159,7 +159,7 @@ voice-pet config set \
   --brain picoclaw \
   --picoclaw-ws-url ws://127.0.0.1:18790/pico/ws \
   --picoclaw-session-id voice-pet \
-  --picoclaw-node-script "$(pwd)/pico_bridge_once.js"
+  --picoclaw-node-script "$(pwd)/pico_bridge_session.js"
 ```
 
 Common fields:

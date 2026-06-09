@@ -62,7 +62,7 @@ src/voice_pet/
     ├── mock_mvp.py
     └── demo_loop.py
 voice-pet                      # 用户入口命令
-pico_bridge_once.js            # Node WebSocket helper for PicoClaw bridge
+pico_bridge_session.js         # Node 常驻 WebSocket helper for PicoClaw bridge
 ```
 
 ## 环境要求
@@ -164,7 +164,7 @@ voice-pet config set \
   --brain picoclaw \
   --picoclaw-ws-url ws://127.0.0.1:18790/pico/ws \
   --picoclaw-session-id voice-pet \
-  --picoclaw-node-script "$(pwd)/pico_bridge_once.js"
+  --picoclaw-node-script "$(pwd)/pico_bridge_session.js"
 ```
 
 常用可配置字段：
@@ -299,6 +299,8 @@ voice-pet config set \
 
 等待提示会按递增间隔播放：默认第 1 条等待 5 秒，之后分别等待 10、15、20 秒，达到最大间隔后保持 20 秒一条。连接 PicoClaw 时，voice-pet 会优先使用可观察的工具进度播报，例如“我正在查网页资料”“我正在处理音乐播放”；不会播出模型隐藏思维链。
 
+等待 PicoClaw 长任务期间也会短轮询麦克风。说 `小爱停下来先`、`小爱先停下`、`小爱取消任务` 这类明确停止语音时，voice-pet 会播“好，先停下。”，并重启本地 `pico_bridge_session.js` 会话，不再播后续回复。可通过 `runtime.task_cancel_start_seconds`、`runtime.task_cancel_poll_seconds`、`runtime.task_cancel_record_timeout_seconds` 调整开始监听、轮询间隔和短录音等待时间；`direct_llm` 后端不能强杀底层 HTTP 请求，只能尽快停止等待和忽略后续回复。
+
 音乐暂停确认也可以配置多条随机话术。第一次触发时会合成到 `~/.picoclaw/voice-pet/runtime/music-control-prompts/`，之后直接播放缓存音频：
 
 ```bash
@@ -379,7 +381,9 @@ voice-pet mock --wake-text "小爱小爱" --user-text "小爱播放邓紫棋的�
 ncm-cli state
 ```
 
-点歌类请求会先由 voice-pet 口播 PicoClaw 的提示，例如“正在播放……”，提示音播完后再释放 `ncm-cli` 启动 `mpv` 正式播放音乐。这样可以避免提示音和音乐同时抢同一个蓝牙/ALSA 输出。
+点歌类请求会先由 voice-pet 口播短提示，例如“正在准备播放”，提示音播完后再释放 `ncm-cli` 启动 `mpv` 正式播放音乐。释放给 `mpv` 后，voice-pet 会跳过 PicoClaw 返回的最终点歌回复，避免 TTS 再次抢占同一个蓝牙/ALSA 输出把歌曲打停。
+
+点过一次的歌会自动进入本地缓存。`ncm-cli` 包装层会把可播放 URL 和歌曲信息写到 `~/.config/ncm-cli/voice-pet-play-url-cache.json`、`~/.config/ncm-cli/voice-pet-last-play.json`；`voice-pet` 会把用户原始点歌请求映射到上次成功播放的歌曲，缓存到 `~/.picoclaw/voice-pet/runtime/music-request-cache.json`。之后再次说同一句点歌请求时，voice-pet 会先尝试直接播放上次拿到的链接，跳过 PicoClaw 搜索；如果链接过期或缓存不可用，会自动回退到 PicoClaw/网易云正常搜索流程。语音回复的系统 prompt 也要求点歌时不要输出链接，TTS 前还会兜底移除 URL，避免把网易云地址念出来。
 
 音乐播放期间 voice-pet 仍会保持麦克风监听，但会进入音乐控制模式：只响应带 `小爱` 前缀的播放控制，例如 `小爱暂停播放`、`小爱停止播放`、`小爱结束播放`、`小爱继续播放`。其他内容，包括 `小爱阿爸阿爸` 这类非控制语音，会记录为忽略，不会转发给 PicoClaw，也不会打断音乐。新的点歌请求，例如 `小爱播放一首周杰伦的歌`，会转给 PicoClaw 处理。暂停成功后会随机播放一条本地缓存提示音，例如“已经暂停啦，主人。”；提示话术可在 `music.pause_prompt_texts` 里配置，默认 10 条。暂停后可以继续对话，`小爱继续播放` 会恢复音乐。
 

@@ -11,7 +11,7 @@ from urllib.request import Request, urlopen
 
 
 class PicoClawGatewayProcess:
-    def __init__(self, runtime: dict[str, Any]):
+    def __init__(self, runtime: dict[str, Any], *, env: dict[str, str] | None = None):
         self.enabled = bool(runtime.get("picoclaw_manage_gateway", False))
         self.command = str(runtime.get("picoclaw_gateway_command", "picoclaw")).strip()
         self.args = _args_list(runtime.get("picoclaw_gateway_args", ["gateway"]))
@@ -19,6 +19,7 @@ class PicoClawGatewayProcess:
         self.ready_url = str(runtime.get("picoclaw_gateway_ready_url", "http://127.0.0.1:18790/ready")).strip()
         self.start_timeout_seconds = float(runtime.get("picoclaw_gateway_start_timeout_seconds", 20.0))
         self.stop_timeout_seconds = float(runtime.get("picoclaw_gateway_stop_timeout_seconds", 10.0))
+        self.env = env
         self.proc: subprocess.Popen | None = None
 
     def start(self) -> None:
@@ -33,7 +34,7 @@ class PicoClawGatewayProcess:
         cmd = [self.command, *self.args]
         cwd = str(Path(self.cwd).expanduser()) if self.cwd else None
         print(f"[picoclaw] starting gateway: {' '.join(shlex.quote(part) for part in cmd)}")
-        self.proc = subprocess.Popen(cmd, cwd=cwd)
+        self.proc = subprocess.Popen(cmd, cwd=cwd, env=self.env)
         try:
             self._wait_ready()
         except Exception:
